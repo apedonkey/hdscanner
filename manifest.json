@@ -1,0 +1,51 @@
+{
+  "manifest_version": 3,
+  "name": "HD Clearance Scanner",
+  "version": "1.1",
+  "description": "Find hidden clearance deals at your local Home Depot",
+  "permissions": [
+    "storage",
+    "unlimitedStorage",
+    "tabs",
+    "scripting",
+    "alarms"
+  ],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "host_permissions": [
+    "https://*.homedepot.com/*",
+    "https://api.telegram.org/*"
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_icon": {
+      "16": "icon16.png",
+      "48": "icon48.png",
+      "128": "icon128.png"
+    }
+  },
+  "icons": {
+    "16": "icon16.png",
+    "48": "icon48.png",
+    "128": "icon128.png"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://www.homedepot.com/*",
+        "https://homedepot.com/*"
+      ],
+      "js": ["store-force.js"],
+      "run_at": "document_start"
+    },
+    {
+      "matches": [
+        "https://www.homedepot.com/*",
+        "https://homedepot.com/*"
+      ],
+      "js": ["db.js", "content.js"],
+      "run_at": "document_idle"
+    }
+  ]
+}

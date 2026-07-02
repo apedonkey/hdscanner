@@ -1,0 +1,1138 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@500;600;700;800&family=Barlow:wght@400;500;600;700&display=swap">
+  <style>
+    :root {
+      /* Aisle-sign palette */
+      --orange: #f96302;
+      --orange-deep: #d54f00;
+      --orange-soft: #fff1e6;
+      --orange-glow: rgba(249, 99, 2, 0.18);
+      --copper: #a95f2e;
+      --copper-deep: #8a4b20;
+      --copper-soft: #f9ede2;
+      --tag-yellow: #ffd60a;
+      --tag-yellow-ink: #6b5300;
+      --ink: #23211c;
+      --ink-2: #5b574d;
+      --ink-3: #97927f;
+      --paper: #f5f2ea;
+      --surface: #fffdf8;
+      --line: #e6e1d3;
+      --line-soft: #f0ecdf;
+      --green: #177a45;
+      --green-soft: #e9f6ee;
+      --red: #c92a1c;
+      --red-soft: #fdefed;
+      --blue: #1d5fbf;
+      --blue-soft: #ecf3fd;
+      --amber-ink: #8a6400;
+      --amber-soft: #fdf6dd;
+      --shadow-btn: 0 2px 0 rgba(0, 0, 0, 0.14);
+      --shadow-card: 0 1px 2px rgba(60, 50, 30, 0.05);
+      --font-display: 'Barlow Condensed', 'Arial Narrow', 'Segoe UI', sans-serif;
+      --font-body: 'Barlow', 'Segoe UI', system-ui, sans-serif;
+    }
+
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      width: 420px;
+      min-height: 500px;
+      font-family: var(--font-body);
+      background: var(--paper);
+      color: var(--ink);
+      -webkit-font-smoothing: antialiased;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    /* ===== HEADER — orange aisle sign ===== */
+    .header {
+      position: relative;
+      background: var(--orange);
+      background-image: repeating-linear-gradient(
+        -55deg,
+        rgba(255, 255, 255, 0.05) 0px,
+        rgba(255, 255, 255, 0.05) 2px,
+        transparent 2px,
+        transparent 14px
+      );
+      padding: 15px 18px 14px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 3px solid #b34200;
+    }
+    .header-logo {
+      width: 38px;
+      height: 38px;
+      background: #ffffff;
+      border-radius: 6px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex-shrink: 0;
+      transform: rotate(-4deg);
+      box-shadow: 0 2px 0 rgba(0, 0, 0, 0.18);
+    }
+    .header-logo svg { width: 22px; height: 22px; }
+    .header-text { flex: 1; min-width: 0; }
+    .header-title {
+      font-family: var(--font-display);
+      color: #ffffff;
+      font-size: 21px;
+      font-weight: 800;
+      letter-spacing: 0.5px;
+      text-transform: uppercase;
+      line-height: 1.1;
+      text-shadow: 0 1px 0 rgba(0, 0, 0, 0.15);
+    }
+    .header-subtitle {
+      color: #ffe3cd;
+      font-size: 11px;
+      font-weight: 500;
+      margin-top: 1px;
+    }
+    .header-badge {
+      font-family: var(--font-display);
+      color: #ffd9bd;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: 0.5px;
+      border: 1px solid rgba(255, 255, 255, 0.35);
+      padding: 2px 8px;
+      border-radius: 20px;
+    }
+
+    /* ===== LAYOUT ===== */
+    .content {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 11px;
+    }
+
+    /* ===== CARDS ===== */
+    .card {
+      background: var(--surface);
+      border-radius: 8px;
+      padding: 13px 14px;
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow-card);
+    }
+    .card-label {
+      font-family: var(--font-display);
+      font-size: 12px;
+      font-weight: 700;
+      text-transform: uppercase;
+      letter-spacing: 1.2px;
+      color: var(--ink-3);
+      margin-bottom: 9px;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .card-label::before {
+      content: "";
+      width: 4px;
+      height: 12px;
+      background: var(--orange);
+      border-radius: 1px;
+    }
+
+    /* ===== STORE SEARCH ===== */
+    .store-search-row { display: flex; gap: 8px; }
+    .store-search-input {
+      flex: 1;
+      padding: 9px 12px;
+      border: 1.5px solid var(--line);
+      border-radius: 6px;
+      font-family: var(--font-body);
+      font-size: 13px;
+      font-weight: 500;
+      color: var(--ink);
+      background: var(--surface);
+      transition: border-color 0.15s, box-shadow 0.15s;
+    }
+    .store-search-input:focus {
+      outline: none;
+      border-color: var(--orange);
+      box-shadow: 0 0 0 3px var(--orange-glow);
+    }
+    .store-search-input::placeholder { color: var(--ink-3); font-weight: 400; }
+    .btn-search-store {
+      padding: 9px 16px;
+      background: var(--ink);
+      color: #fff;
+      border: none;
+      border-radius: 6px;
+      font-family: var(--font-display);
+      font-size: 14px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 0.15s;
+      white-space: nowrap;
+    }
+    .btn-search-store:hover { background: #3a372f; }
+    .btn-search-store:disabled { background: #c9c4b4; cursor: not-allowed; }
+
+    .store-results {
+      display: none;
+      margin-top: 8px;
+      border: 1.5px solid var(--line);
+      border-radius: 6px;
+      max-height: 200px;
+      overflow-y: auto;
+      background: var(--surface);
+    }
+    .store-results::-webkit-scrollbar { width: 4px; }
+    .store-results::-webkit-scrollbar-thumb { background: #d5cfbe; border-radius: 10px; }
+    .store-result-item {
+      padding: 10px 12px;
+      cursor: pointer;
+      border-bottom: 1px solid var(--line-soft);
+      transition: background 0.1s;
+    }
+    .store-result-item:last-child { border-bottom: none; }
+    .store-result-item:hover { background: var(--orange-soft); }
+    .store-result-name { font-size: 13px; font-weight: 600; color: var(--ink); }
+    .store-result-detail { font-size: 11px; color: var(--ink-2); margin-top: 1px; }
+    .store-result-distance {
+      font-family: var(--font-display);
+      font-size: 13px;
+      color: var(--orange-deep);
+      font-weight: 700;
+    }
+
+    .selected-store {
+      display: none;
+      padding: 10px 12px;
+      background: var(--surface);
+      border: 1px solid var(--line);
+      border-left: 4px solid var(--orange);
+      border-radius: 6px;
+    }
+    .selected-store-name {
+      font-family: var(--font-display);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.2px;
+      color: var(--ink);
+    }
+    .selected-store-detail { font-size: 11px; color: var(--ink-2); margin-top: 1px; }
+    .selected-store-change {
+      font-size: 11px;
+      color: var(--blue);
+      cursor: pointer;
+      margin-top: 5px;
+      font-weight: 600;
+      display: inline-block;
+    }
+    .selected-store-change:hover { text-decoration: underline; }
+    #storeId { display: none; }
+
+    /* ===== BUTTONS ===== */
+    .btn-primary {
+      width: 100%;
+      padding: 13px 16px;
+      background: var(--orange);
+      color: white;
+      border: none;
+      border-radius: 7px;
+      font-family: var(--font-display);
+      font-size: 17px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 0.15s, transform 0.05s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: var(--shadow-btn);
+    }
+    .btn-primary:hover { background: var(--orange-deep); }
+    .btn-primary:active { transform: translateY(1px); box-shadow: none; }
+    .btn-primary:disabled { background: #c9c4b4; box-shadow: none; cursor: not-allowed; }
+    .btn-primary svg { width: 16px; height: 16px; }
+
+    .btn-penny {
+      width: 100%;
+      padding: 10px 16px;
+      background: linear-gradient(160deg, #c07a40, var(--copper) 55%, var(--copper-deep));
+      color: #fff7ef;
+      border: none;
+      border-radius: 7px;
+      font-family: var(--font-display);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: filter 0.15s, transform 0.05s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: var(--shadow-btn);
+    }
+    .btn-penny:hover { filter: brightness(1.08); }
+    .btn-penny:active { transform: translateY(1px); box-shadow: none; }
+    .btn-penny svg { width: 15px; height: 15px; }
+
+    .btn-ghost {
+      width: 100%;
+      padding: 9px 14px;
+      background: transparent;
+      color: var(--ink-2);
+      border: 1.5px solid var(--line);
+      border-radius: 6px;
+      font-family: var(--font-body);
+      font-size: 12px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: all 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 6px;
+    }
+    .btn-ghost:hover { background: var(--surface); border-color: #d5cfbe; color: var(--ink); }
+    .btn-ghost:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .btn-stop {
+      width: 100%;
+      padding: 12px 16px;
+      background: var(--red);
+      color: white;
+      border: none;
+      border-radius: 7px;
+      font-family: var(--font-display);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      text-transform: uppercase;
+      cursor: pointer;
+      transition: background 0.15s;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 8px;
+      box-shadow: var(--shadow-btn);
+    }
+    .btn-stop:hover { background: #a82014; }
+
+    .btn-row { display: flex; gap: 8px; }
+    .btn-row > * { flex: 1; }
+
+    .btn-sm {
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-family: var(--font-body);
+      font-size: 12px;
+      font-weight: 600;
+      border: none;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .btn-sm.green { background: var(--green); color: white; }
+    .btn-sm.green:hover { background: #116038; }
+    .btn-sm.outline-red { background: var(--surface); color: var(--red); border: 1.5px solid var(--red); }
+    .btn-sm.outline-red:hover { background: var(--red-soft); }
+
+    /* ===== SCAN ACTIONS ===== */
+    .scan-actions { display: flex; flex-direction: column; gap: 7px; }
+    .scan-hint {
+      font-size: 11px;
+      color: var(--ink-3);
+      text-align: center;
+      margin-top: -1px;
+    }
+
+    /* ===== BANNERS ===== */
+    .banner {
+      display: none;
+      padding: 11px 13px;
+      border-radius: 6px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+    .banner.info { background: var(--blue-soft); color: #17458c; border: 1px solid #c3d8f5; }
+    .banner.warn { background: var(--amber-soft); color: var(--amber-ink); border: 1px solid #ecd98a; }
+    .banner.error { background: var(--red-soft); color: #8f1d12; border: 1px solid #f3c3bd; }
+    .banner.ok { background: var(--green-soft); color: #0f5c33; border: 1px solid #bfe3cd; }
+
+    /* Resume banner */
+    .resume-banner {
+      display: none;
+      padding: 13px 14px;
+      border-radius: 8px;
+      background: var(--amber-soft);
+      border: 1px solid #ecd98a;
+    }
+    .resume-banner-title {
+      font-family: var(--font-display);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      color: var(--amber-ink);
+      margin-bottom: 3px;
+    }
+    .resume-banner-info { font-size: 11px; color: #9a7708; margin-bottom: 10px; }
+    .resume-banner .btn-row button {
+      flex: 1;
+      padding: 8px 12px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 700;
+      border: none;
+      cursor: pointer;
+    }
+
+    /* ===== STATUS & PROGRESS ===== */
+    .status-area { min-height: 16px; }
+    #status { font-size: 12.5px; font-weight: 500; color: var(--ink-2); line-height: 1.5; }
+    #overflowStatus { display: none; font-size: 11px; color: var(--ink-3); margin-top: 3px; }
+    #progress {
+      background: #e8e3d4;
+      border-radius: 20px;
+      height: 7px;
+      margin-top: 8px;
+      overflow: hidden;
+      display: none;
+    }
+    #progressBar {
+      background: var(--orange);
+      background-image: repeating-linear-gradient(
+        -55deg,
+        rgba(255, 255, 255, 0.25) 0px,
+        rgba(255, 255, 255, 0.25) 5px,
+        transparent 5px,
+        transparent 12px
+      );
+      background-size: 200% 100%;
+      animation: bar-stripe 1.2s linear infinite;
+      height: 100%;
+      width: 0%;
+      border-radius: 20px;
+      transition: width 0.4s ease;
+    }
+    @keyframes bar-stripe {
+      0% { background-position: 0 0; }
+      100% { background-position: 34px 0; }
+    }
+    #error {
+      display: none;
+      font-size: 12px;
+      color: var(--red);
+      background: var(--red-soft);
+      border: 1px solid #f3c3bd;
+      border-radius: 6px;
+      padding: 8px 12px;
+      margin-top: 6px;
+      line-height: 1.4;
+    }
+
+    /* ===== STATS ===== */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+    }
+    .stat-card {
+      background: var(--surface);
+      padding: 9px 8px 8px;
+      border-radius: 6px;
+      text-align: center;
+      border: 1px solid var(--line);
+      box-shadow: var(--shadow-card);
+    }
+    .stat-value {
+      font-family: var(--font-display);
+      font-size: 24px;
+      font-weight: 800;
+      color: var(--ink);
+      line-height: 1.1;
+      font-variant-numeric: tabular-nums;
+    }
+    .stat-label {
+      font-family: var(--font-display);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 1px;
+      color: var(--ink-3);
+      margin-top: 1px;
+    }
+
+    /* ===== TABS ===== */
+    .tabs {
+      display: flex;
+      gap: 0;
+      border-bottom: 2px solid var(--line);
+    }
+    .tab {
+      flex: 1;
+      padding: 8px 4px 7px;
+      font-family: var(--font-display);
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: 0.6px;
+      text-transform: uppercase;
+      border: none;
+      border-bottom: 3px solid transparent;
+      margin-bottom: -2px;
+      background: transparent;
+      color: var(--ink-3);
+      cursor: pointer;
+      text-align: center;
+      transition: color 0.15s, border-color 0.15s;
+      width: auto;
+    }
+    .tab:hover { color: var(--ink-2); }
+    .tab.active { color: var(--ink); border-bottom-color: var(--orange); }
+
+    /* ===== TAB PANELS ===== */
+    .tab-panel {
+      background: var(--surface);
+      border-radius: 8px;
+      border: 1px solid var(--line);
+      overflow: hidden;
+      box-shadow: var(--shadow-card);
+    }
+    .tab-panel-header {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--line-soft);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 8px;
+    }
+    .tab-panel-title {
+      font-family: var(--font-display);
+      font-size: 16px;
+      font-weight: 700;
+      letter-spacing: 0.4px;
+      text-transform: uppercase;
+      color: var(--ink);
+    }
+    .tab-panel-count {
+      font-family: var(--font-display);
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--orange-deep);
+      background: var(--orange-soft);
+      padding: 2px 10px;
+      border-radius: 20px;
+      white-space: nowrap;
+    }
+    .tab-panel-body { max-height: 320px; overflow-y: auto; }
+    .tab-panel-body::-webkit-scrollbar { width: 4px; }
+    .tab-panel-body::-webkit-scrollbar-track { background: transparent; }
+    .tab-panel-body::-webkit-scrollbar-thumb { background: #d5cfbe; border-radius: 10px; }
+
+    /* ===== SCAN STATS ROW ===== */
+    .scan-stats-row {
+      display: flex;
+      gap: 12px;
+      padding: 7px 14px;
+      background: var(--paper);
+      font-size: 11px;
+      color: var(--ink-2);
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .scan-stats-row span { font-weight: 700; font-variant-numeric: tabular-nums; }
+
+    /* ===== RESULTS ===== */
+    #results, #allResults, #compareResults, #historyResults { font-size: 12px; }
+
+    .item {
+      padding: 11px 14px;
+      border-bottom: 1px solid var(--line-soft);
+      transition: background 0.1s;
+    }
+    .item:last-child { border-bottom: none; }
+    .item:hover { background: #fbf8f0; }
+    .item-name {
+      font-weight: 600;
+      color: var(--ink);
+      margin-bottom: 3px;
+      font-size: 12.5px;
+      line-height: 1.4;
+    }
+    .item-price {
+      font-family: var(--font-display);
+      color: var(--ink);
+      font-weight: 800;
+      font-size: 20px;
+      line-height: 1.2;
+      font-variant-numeric: tabular-nums;
+    }
+    .item-price span {
+      font-family: var(--font-body);
+      font-size: 12px;
+      color: var(--ink-3);
+      font-weight: 400;
+      text-decoration: line-through;
+      margin-left: 6px;
+      letter-spacing: 0;
+    }
+    .item-savings { color: var(--green); font-size: 11px; font-weight: 700; margin-top: 2px; }
+    .item-meta { color: var(--ink-3); font-size: 10px; margin-top: 3px; }
+    .item-variant { color: var(--blue); font-size: 11px; font-weight: 600; margin-top: 2px; }
+    .item-location { color: var(--blue); font-weight: 600; }
+    .item-link {
+      color: var(--blue);
+      text-decoration: none;
+      font-size: 11px;
+      font-weight: 600;
+      display: inline-block;
+      margin-top: 4px;
+    }
+    .item-link:hover { text-decoration: underline; }
+
+    /* Yellow-tag badge — advertised clearance, like the in-store tag */
+    .tag-badge {
+      display: inline-block;
+      background: var(--tag-yellow);
+      color: var(--tag-yellow-ink);
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.6px;
+      padding: 1px 7px 1px 9px;
+      margin-left: 6px;
+      vertical-align: middle;
+      clip-path: polygon(5px 0, 100% 0, 100% 100%, 5px 100%, 0 50%);
+      transform: rotate(-2deg);
+    }
+
+    /* Penny item highlight */
+    .item-penny {
+      background: var(--copper-soft);
+      border-left: 3px solid var(--copper);
+    }
+    .item-penny:hover { background: #f5e5d5; }
+    .penny-badge {
+      display: inline-block;
+      background: linear-gradient(160deg, #c07a40, var(--copper-deep));
+      color: #fff4e8;
+      padding: 1px 7px;
+      border-radius: 20px;
+      font-family: var(--font-display);
+      font-size: 10px;
+      font-weight: 700;
+      letter-spacing: 0.8px;
+      margin-left: 6px;
+      vertical-align: middle;
+    }
+
+    /* ===== FILTERS ===== */
+    .filter-row {
+      display: flex;
+      gap: 8px;
+      padding: 9px 14px;
+      background: var(--paper);
+      border-bottom: 1px solid var(--line-soft);
+    }
+    .filter-select {
+      width: auto;
+      padding: 5px 10px;
+      font-family: var(--font-body);
+      font-size: 11px;
+      font-weight: 500;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      background: var(--surface);
+      color: var(--ink);
+      cursor: pointer;
+    }
+    .filter-select:focus { outline: none; border-color: var(--orange); }
+
+    /* ===== COMPARE & HISTORY ===== */
+    .compare-item { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); }
+    .compare-stores { display: flex; flex-wrap: wrap; gap: 4px; margin-top: 6px; }
+    .store-price {
+      font-size: 10px;
+      padding: 3px 8px;
+      background: var(--green-soft);
+      color: #0f5c33;
+      border-radius: 4px;
+      font-weight: 500;
+    }
+    .store-price.best { background: var(--green); color: white; font-weight: 700; }
+    .price-drop { color: var(--green); font-weight: bold; }
+    .new-badge {
+      background: var(--blue);
+      color: white;
+      font-family: var(--font-display);
+      font-size: 10px;
+      letter-spacing: 0.6px;
+      padding: 1px 6px;
+      border-radius: 3px;
+      margin-left: 5px;
+      font-weight: 700;
+    }
+    .tab-description { font-size: 11px; color: var(--ink-3); padding: 0 14px 9px; }
+    .compare-diff { font-size: 11px; color: var(--green); font-weight: 600; }
+    .history-store {
+      font-family: var(--font-display);
+      font-weight: 700;
+      font-size: 14px;
+      color: var(--ink);
+    }
+    .history-date { font-size: 10px; color: var(--ink-3); }
+    .history-meta { font-size: 11px; margin-top: 4px; color: var(--ink-2); }
+    .history-found { color: var(--orange-deep); font-weight: 700; }
+
+    /* ===== EMPTY STATE ===== */
+    .empty-state { text-align: center; padding: 30px 20px; color: var(--ink-3); }
+    .empty-state-icon {
+      width: 40px;
+      height: 40px;
+      margin: 0 auto 10px;
+      color: #cfc9b6;
+    }
+    .empty-state-icon svg { width: 100%; height: 100%; }
+    .empty-state-text { font-size: 13px; font-weight: 600; color: var(--ink-2); }
+    .empty-state-hint { font-size: 11px; margin-top: 4px; }
+
+    /* ===== HISTORY ACTIONS ===== */
+    .history-actions {
+      padding: 11px 14px;
+      display: flex;
+      gap: 8px;
+      border-top: 1px solid var(--line-soft);
+    }
+    .history-actions button { flex: 1; }
+
+    /* ===== SCANNING INDICATOR ===== */
+    .scanning-dot {
+      display: inline-block;
+      width: 7px;
+      height: 7px;
+      background: var(--orange);
+      border-radius: 50%;
+      margin-right: 7px;
+      animation: pulse 1.2s ease-in-out infinite;
+      vertical-align: middle;
+    }
+    @keyframes pulse {
+      0%, 100% { opacity: 1; transform: scale(1); }
+      50% { opacity: 0.3; transform: scale(0.7); }
+    }
+
+    /* ===== TELEGRAM CARD ===== */
+    .tg-card { padding: 0; }
+    .tg-summary {
+      list-style: none;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 13px 14px;
+      user-select: none;
+    }
+    .tg-summary::-webkit-details-marker { display: none; }
+    .tg-summary .card-label { margin-bottom: 0; }
+    .tg-summary-status {
+      margin-left: auto;
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--ink-3);
+      white-space: nowrap;
+    }
+    .tg-summary-status.connected { color: var(--green); }
+    .tg-summary::after {
+      content: "";
+      flex-shrink: 0;
+      border: solid var(--ink-3);
+      border-width: 0 1.5px 1.5px 0;
+      padding: 2.5px;
+      transform: rotate(45deg);
+      transition: transform 0.15s;
+    }
+    .tg-card[open] > .tg-summary::after { transform: rotate(-135deg); }
+    .tg-body { padding: 0 14px 13px; }
+    .tg-blurb {
+      font-size: 12px;
+      color: var(--ink-2);
+      line-height: 1.5;
+      margin-bottom: 9px;
+    }
+    .tg-blurb a, .tg-steps a { color: var(--blue); font-weight: 600; text-decoration: none; }
+    .tg-blurb a:hover, .tg-steps a:hover { text-decoration: underline; }
+    .tg-steps {
+      font-size: 11.5px;
+      color: var(--ink-2);
+      line-height: 1.55;
+      margin: 0 0 10px 16px;
+    }
+    .tg-steps li { margin-bottom: 3px; }
+    .tg-steps code {
+      background: var(--paper);
+      border: 1px solid var(--line);
+      border-radius: 3px;
+      padding: 0 4px;
+      font-size: 11px;
+    }
+    .tg-waiting-line {
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--ink-2);
+      margin: 10px 0;
+    }
+    .tg-connected-title {
+      font-family: var(--font-display);
+      font-size: 15px;
+      font-weight: 700;
+      letter-spacing: 0.3px;
+      text-transform: uppercase;
+      color: var(--green);
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .tg-connected-title::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+    .tg-connected-detail { font-size: 12px; color: var(--ink-2); margin-top: 2px; }
+    .tg-channel {
+      margin-top: 11px;
+      padding-top: 10px;
+      border-top: 1px dashed var(--line);
+    }
+    .tg-channel-label { font-size: 12px; color: var(--ink-2); margin-bottom: 7px; }
+    .tg-channel-label strong { color: var(--ink); }
+    .tg-hint { font-size: 11px; color: var(--ink-3); line-height: 1.5; margin-top: 7px; }
+    .btn-ghost.danger { color: var(--red); border-color: #f3c3bd; }
+    .btn-ghost.danger:hover { background: var(--red-soft); border-color: var(--red); }
+
+    /* ===== ADVANCED TOOLS ===== */
+    .advanced {
+      border-top: 1px dashed var(--line);
+      padding-top: 4px;
+      margin-top: 2px;
+    }
+    .advanced summary {
+      font-size: 11px;
+      font-weight: 600;
+      color: var(--ink-3);
+      cursor: pointer;
+      padding: 6px 2px;
+      list-style: none;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      user-select: none;
+    }
+    .advanced summary::-webkit-details-marker { display: none; }
+    .advanced summary::before {
+      content: "";
+      border: solid var(--ink-3);
+      border-width: 0 1.5px 1.5px 0;
+      padding: 2.5px;
+      transform: rotate(-45deg);
+      transition: transform 0.15s;
+    }
+    .advanced[open] summary::before { transform: rotate(45deg); }
+    .advanced summary:hover { color: var(--ink-2); }
+    .advanced-body {
+      display: flex;
+      flex-direction: column;
+      gap: 7px;
+      padding: 4px 0 6px;
+    }
+
+    /* ===== UTILITIES ===== */
+    .hidden { display: none !important; }
+    label { display: block; font-weight: 600; margin-bottom: 5px; font-size: 13px; }
+    input, select {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid var(--line);
+      border-radius: 6px;
+      font-size: 13px;
+      font-family: var(--font-body);
+    }
+    button { font-family: inherit; }
+  </style>
+</head>
+<body>
+
+  <!-- HEADER -->
+  <div class="header">
+    <div class="header-logo">
+      <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <path d="M20.59 13.41 11 3.83A2 2 0 0 0 9.58 3.24H5a2 2 0 0 0-2 2v4.58c0 .53.21 1.04.59 1.42l9.58 9.58a2 2 0 0 0 2.83 0l4.59-4.58a2 2 0 0 0 0-2.83z" stroke="#f96302" stroke-width="2" stroke-linejoin="round"/>
+        <circle cx="7.5" cy="7.5" r="1.5" fill="#f96302"/>
+      </svg>
+    </div>
+    <div class="header-text">
+      <div class="header-title">Clearance Scanner</div>
+      <div class="header-subtitle">Hidden markdowns at your Home Depot</div>
+    </div>
+    <div class="header-badge">v1.0</div>
+  </div>
+
+  <div class="content">
+
+    <!-- CONNECTION BANNER -->
+    <div class="banner info" id="connectionBanner">
+      Open <strong>homedepot.com</strong> in a tab first, then reopen this popup to scan.
+    </div>
+
+    <!-- STORE SELECTOR -->
+    <div class="card">
+      <div class="card-label">Your Store</div>
+      <div class="store-search-row">
+        <input type="text" id="zipInput" class="store-search-input" placeholder="ZIP code or city" maxlength="30">
+        <button id="searchStoreBtn" class="btn-search-store">Find</button>
+      </div>
+      <div id="storeResults" class="store-results"></div>
+      <div id="selectedStoreDisplay" class="selected-store">
+        <div class="selected-store-name" id="selectedStoreName"></div>
+        <div class="selected-store-detail" id="selectedStoreDetail"></div>
+        <div class="selected-store-change" id="changeStoreBtn">Change store</div>
+      </div>
+      <input type="hidden" id="storeId" value="">
+    </div>
+
+    <!-- SCAN ACTIONS -->
+    <div class="scan-actions">
+      <button id="sitemapScanBtn" class="btn-primary">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"/><path d="m21 21-4.35-4.35"/></svg>
+        Scan for Clearance
+      </button>
+      <p class="scan-hint" id="scanHint">Full scan of your store &middot; runs in the background, feel free to close this popup</p>
+      <button id="pennyScanBtn" class="btn-penny" title="Penny items are products marked down to $0.01 — deleted from inventory but still on the shelf.">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 6v12M9 9.5a2.5 2 0 0 1 5 0c0 2-3 2-3 4M12 17.5v.5"/></svg>
+        Penny Scan
+      </button>
+      <button id="checkSkusOnlyBtn" class="btn-ghost" title="Re-checks prices using the product list from your last full scan — much faster than a full scan.">
+        Quick Recheck &middot; uses your last product list
+      </button>
+    </div>
+
+    <!-- STOP BUTTON -->
+    <button id="stopBtn" class="btn-stop" style="display:none;">
+      <svg viewBox="0 0 24 24" fill="currentColor" width="14" height="14"><rect x="6" y="6" width="12" height="12" rx="2"/></svg>
+      Stop Scan
+    </button>
+
+    <!-- RESUME BANNER -->
+    <div id="resumeBanner" class="resume-banner">
+      <div class="resume-banner-title">Pick up where you left off?</div>
+      <div class="resume-banner-info" id="resumeInfo"></div>
+      <div class="btn-row">
+        <button id="resumeBtn" style="background: var(--orange); color: white;">Resume Scan</button>
+        <button id="discardBtn" style="background: var(--line); color: var(--ink-2);">Discard</button>
+      </div>
+    </div>
+
+    <!-- STATUS & PROGRESS -->
+    <div class="status-area">
+      <div id="status"></div>
+      <div id="overflowStatus"></div>
+      <div id="progress"><div id="progressBar"></div></div>
+      <div id="error"></div>
+    </div>
+
+    <!-- DATABASE STATS -->
+    <div id="dbStatsSection">
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-value" id="dbTotalItems">0</div>
+          <div class="stat-label">Deals Saved</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="dbStores">0</div>
+          <div class="stat-label">Stores</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-value" id="dbScans">0</div>
+          <div class="stat-label">Scans</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- TABS -->
+    <div class="tabs">
+      <button class="tab active" data-tab="scan">Latest</button>
+      <button class="tab" data-tab="all">Saved</button>
+      <button class="tab" data-tab="compare">Compare</button>
+      <button class="tab" data-tab="history">History</button>
+    </div>
+
+    <!-- SCAN RESULTS TAB -->
+    <div class="tab-panel tab-content" id="scanTab">
+      <div class="tab-panel-header">
+        <div class="tab-panel-title" id="scanPanelTitle">Clearance Found</div>
+        <div class="tab-panel-count" id="itemCountBadge"><span id="itemCount">0</span> items</div>
+      </div>
+      <div class="scan-stats-row">
+        <div>Products checked: <span id="skuCount">0</span></div>
+        <div id="errorDisplay" style="display:none;">Hiccups: <span id="errorCount">0</span></div>
+      </div>
+      <div class="tab-panel-body" id="results">
+        <div class="empty-state">
+          <div class="empty-state-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M20.59 13.41 11 3.83A2 2 0 0 0 9.58 3.24H5a2 2 0 0 0-2 2v4.58c0 .53.21 1.04.59 1.42l9.58 9.58a2 2 0 0 0 2.83 0l4.59-4.58a2 2 0 0 0 0-2.83z"/><circle cx="7.5" cy="7.5" r="1.5" fill="currentColor" stroke="none"/></svg>
+          </div>
+          <div class="empty-state-text">No scan results yet</div>
+          <div class="empty-state-hint">Pick your store above and hit Scan for Clearance</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ALL ITEMS TAB -->
+    <div class="tab-panel tab-content" id="allTab" style="display:none;">
+      <div class="tab-panel-header">
+        <div class="tab-panel-title">Saved Deals</div>
+        <div class="tab-panel-count" id="allItemCountBadge"><span id="allItemCount">0</span> items</div>
+      </div>
+      <div class="filter-row">
+        <select id="filterStore" class="filter-select">
+          <option value="">All Stores</option>
+        </select>
+        <select id="filterSort" class="filter-select">
+          <option value="percentOff">Biggest % Off</option>
+          <option value="price">Lowest Price</option>
+          <option value="newest">Newest First</option>
+        </select>
+      </div>
+      <div class="tab-panel-body" id="allResults">
+        <div class="empty-state">
+          <div class="empty-state-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round"><path d="M21 8v13H3V8M1 3h22v5H1zM10 12h4"/></svg>
+          </div>
+          <div class="empty-state-text">No saved deals yet</div>
+          <div class="empty-state-hint">Every scan adds its finds here automatically</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- COMPARE STORES TAB -->
+    <div class="tab-panel tab-content" id="compareTab" style="display:none;">
+      <div class="tab-panel-header">
+        <div class="tab-panel-title">Compare Stores</div>
+      </div>
+      <div class="tab-description">The same item is often cheaper one town over. Scan more than one store to compare.</div>
+      <div class="tab-panel-body" id="compareResults">
+        <div class="empty-state">
+          <div class="empty-state-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M3 21h18M6 21V9l6-6 6 6v12M10 21v-6h4v6"/></svg>
+          </div>
+          <div class="empty-state-text">Nothing to compare yet</div>
+          <div class="empty-state-hint">Scan at least two stores to see price differences</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- SCAN HISTORY TAB -->
+    <div class="tab-panel tab-content" id="historyTab" style="display:none;">
+      <div class="tab-panel-header">
+        <div class="tab-panel-title">Scan History</div>
+      </div>
+      <div class="tab-panel-body" id="historyResults">
+        <div class="empty-state">
+          <div class="empty-state-icon">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 3"/></svg>
+          </div>
+          <div class="empty-state-text">No scans yet</div>
+          <div class="empty-state-hint">Your past scans will show up here</div>
+        </div>
+      </div>
+      <div class="history-actions">
+        <button id="exportDbBtn" class="btn-sm green">Export Data</button>
+        <button id="clearDbBtn" class="btn-sm outline-red">Clear All Data</button>
+      </div>
+    </div>
+
+    <!-- TELEGRAM ALERTS (collapsible) -->
+    <details class="card tg-card" id="telegramCard">
+      <summary class="tg-summary">
+        <span class="card-label">Telegram Alerts</span>
+        <span class="tg-summary-status" id="tgHeaderStatus">Not connected</span>
+      </summary>
+      <div class="tg-body">
+
+      <!-- Disconnected state -->
+      <div id="tgDisconnected">
+        <p class="tg-blurb">Get a Telegram message the moment a deal is found &mdash; and control scans from your phone.</p>
+        <ol class="tg-steps">
+          <li>In Telegram, message <a href="https://t.me/BotFather" target="_blank">@BotFather</a> and send <code>/newbot</code>. Name it anything.</li>
+          <li>Paste the token BotFather gives you here:</li>
+        </ol>
+        <div class="store-search-row">
+          <input type="text" id="tgTokenInput" class="store-search-input" placeholder="123456789:AbCdEf..." autocomplete="off" spellcheck="false">
+          <button id="tgConnectBtn" class="btn-search-store">Connect</button>
+        </div>
+        <div id="tgConnectError" class="banner error" style="margin-top:8px;"></div>
+      </div>
+
+      <!-- Waiting for /start -->
+      <div id="tgWaiting" style="display:none;">
+        <p class="tg-blurb">Almost there! Open Telegram and send <strong>/start</strong> to <a id="tgBotLink" href="#" target="_blank">your bot</a>.</p>
+        <p class="tg-waiting-line"><span class="scanning-dot"></span>Waiting for your message&hellip;</p>
+        <button id="tgCancelBtn" class="btn-ghost">Cancel</button>
+      </div>
+
+      <!-- Connected state -->
+      <div id="tgConnected" style="display:none;">
+        <div class="tg-connected-title">Connected</div>
+        <div class="tg-connected-detail" id="tgConnectedDetail"></div>
+
+        <!-- Deals channel: controls stay in the private chat; finds broadcast here -->
+        <div class="tg-channel">
+          <div class="tg-channel-label">Deals post to: <strong id="tgChannelCurrent">your private chat</strong></div>
+          <div class="store-search-row">
+            <input type="text" id="tgChannelInput" class="store-search-input" placeholder="@yourdealschannel" autocomplete="off" spellcheck="false">
+            <button id="tgChannelSaveBtn" class="btn-search-store">Save</button>
+          </div>
+          <button id="tgChannelRemoveBtn" class="btn-ghost" style="display:none; margin-top:7px;">Post deals to my private chat instead</button>
+          <p class="tg-hint">Optional: broadcast finds to a channel so others can follow along &mdash; add your bot as an <strong>admin</strong> of the channel first. Remote controls always stay in your private chat.</p>
+          <div id="tgChannelError" class="banner error" style="margin-top:7px;"></div>
+        </div>
+
+        <div class="btn-row" style="margin-top:10px;">
+          <button id="tgTestBtn" class="btn-ghost">Send Test Message</button>
+          <button id="tgDisconnectBtn" class="btn-ghost danger">Disconnect</button>
+        </div>
+        <div id="tgStatusNote" class="banner warn" style="margin-top:8px;"></div>
+      </div>
+
+      </div><!-- /tg-body -->
+    </details>
+
+    <!-- ADVANCED / DIAGNOSTIC TOOLS -->
+    <details class="advanced">
+      <summary>Advanced tools</summary>
+      <div class="advanced-body">
+        <button id="testConnectionBtn" class="btn-ghost">Test API Connection</button>
+        <button id="downloadFulfillmentLogBtn" class="btn-ghost" style="display:none;">Download Fulfillment Log</button>
+        <button id="verifyDetectionBtn" class="btn-ghost" style="display:none;">Verify Penny Detection</button>
+        <button id="probeB2BBtn" class="btn-ghost" style="display:none;">Probe B2B Inventory API</button>
+        <div id="b2bResult" class="banner" style="display:none; white-space:pre-wrap;"></div>
+        <div id="connectionResult" class="banner"></div>
+      </div>
+    </details>
+
+  </div>
+
+  <script src="popup.js"></script>
+</body>
+</html>
