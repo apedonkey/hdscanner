@@ -56,9 +56,10 @@ and ready to paste.
 
 ## Required listing assets (not in repo — create before submitting)
 
-- [x] Two 1280×800 screenshots are provided in `store-assets/`
-      (`store-screenshot-1.png`, `store-screenshot-2.png`) — the popup composed
-      on a branded background. Upload these in the dashboard.
+- [x] Three 1280×800 screenshots are provided in `store-assets/`: the populated
+      popup with a penny find (`-1`), the Penny Scan accuracy disclaimer (`-2`),
+      and a feature-callout showing each find's aisle/bay, SKU, stock, and price
+      (`-3`). Upload these in the dashboard.
 - [ ] 128×128 store icon — `icon128.png` can be reused.
 - [ ] Optional: small promo tile 440×280.
 - [ ] Detailed description (expand on the summary; state clearly that it is
