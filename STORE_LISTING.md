@@ -49,9 +49,10 @@ and ready to paste.
 - Certify: data is **not** sold or transferred to third parties; **not** used
   for anything unrelated to the single purpose; **not** used for creditworthiness
   or lending.
-- **Privacy policy URL:** link to the hosted copy of `PRIVACY.md` (e.g. GitHub
-  Pages or the raw file URL). A privacy policy URL is required because the
-  extension handles user-provided data (the Telegram token).
+- **Privacy policy URL:** `https://apedonkey.github.io/hdscanner/` — served from
+  `docs/index.html` once GitHub Pages is enabled (Settings → Pages → Deploy from
+  a branch → `/docs`). A privacy policy URL is required because the extension
+  handles user-provided data (the Telegram token).
 
 ## Required listing assets (not in repo — create before submitting)
 
