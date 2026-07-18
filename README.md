@@ -1,6 +1,6 @@
-# Clearance Scanner (Home Depot)
+# Penny & Clearance Finder
 
-A Chrome extension that finds **in-store clearance markdowns** at a specific Home Depot store — the yellow-tag and penny deals that don't show up on the website. It checks your store's inventory through your own logged-in browser session and shows you what's actually marked down right now.
+An unofficial Chrome extension that finds **in-store clearance markdowns** at a specific Home Depot store — the yellow-tag and penny deals that don't show up on the website. It checks your store's inventory through your own logged-in browser session and shows you what's actually marked down right now.
 
 > Not affiliated with, endorsed by, or connected to The Home Depot, Inc. All trademarks belong to their respective owners. Use it responsibly and at your own risk.
 
@@ -35,7 +35,7 @@ Because this isn't on the Chrome Web Store, you load it in developer mode. Takes
 2. Open Chrome and go to `chrome://extensions`.
 3. Turn on **Developer mode** (top-right toggle).
 4. Click **Load unpacked** and select the folder you just unzipped/cloned (the one containing `manifest.json`).
-5. The **Clearance Scanner** icon (orange price tag) appears in your toolbar. Pin it for easy access.
+5. The **Penny & Clearance Finder** icon (teal price tag) appears in your toolbar. Pin it for easy access.
 
 To update later: download the newer version over the same folder, then hit the refresh icon on the extension's card at `chrome://extensions`.
 

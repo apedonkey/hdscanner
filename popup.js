@@ -172,9 +172,9 @@ chrome.runtime.onMessage.addListener((message) => {
     if (message.needsTab) {
       statusText = 'Open homedepot.com in any tab — the scan will pick back up automatically.';
     } else if (message.rateLimitLevel === 'heavy') {
-      statusText = `Home Depot is throttling us — cooling down ${message.cooldownSec}s, then continuing (${counts} done)`;
+      statusText = `Server is rate-limiting requests — pausing ${message.cooldownSec}s, then continuing (${counts} done)`;
     } else if (message.rateLimitLevel === 'moderate') {
-      statusText = `Slowing down for ${message.cooldownSec}s to stay under Home Depot's radar (${counts} done)`;
+      statusText = `Slowing down ${message.cooldownSec}s to avoid overloading the server (${counts} done)`;
     } else if (message.rateLimitLevel === 'light') {
       statusText = `Quick ${message.cooldownSec}s pause — pacing our requests (${counts} done)`;
     }

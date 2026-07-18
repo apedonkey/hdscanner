@@ -297,8 +297,8 @@ query searchModel(
 // Track rate limiting
 let rateLimitHits = 0;
 
-// Shared Akamai/429 cooldown. When any GraphQL request gets flagged, every other
-// caller waits out this window instead of hammering the endpoint in parallel.
+// Shared rate-limit cooldown. When any GraphQL request gets a 403/429, every other
+// caller waits out this window instead of sending more requests in parallel.
 let sharedCooldownUntil = 0;
 
 // Global scan stop flag
@@ -310,7 +310,7 @@ let rateLimitedCategoryCount = 0;
 
 // Low-level GraphQL POST shared by every caller. Adds a hard request timeout,
 // unified 403/429 detection with exponential backoff, and a shared cooldown so
-// parallel callers stop hammering the endpoint while Akamai has us flagged.
+// parallel callers back off together when the server signals rate limiting.
 // Returns parsed JSON on success, or an { error, errors } shape on failure.
 async function graphqlFetch(operation, variables, query, { timeoutMs = 20000, retryCount = 0, maxRetries = 3 } = {}) {
   // Respect a cooldown set by a sibling request that was just rate-limited.
@@ -343,7 +343,7 @@ async function graphqlFetch(operation, variables, query, { timeoutMs = 20000, re
     clearTimeout(timer);
   }
 
-  // Akamai (403) and rate limiting (429): set the shared cooldown and back off.
+  // Rate limiting (403 / 429): set the shared cooldown and back off.
   if (response.status === 403 || response.status === 429) {
     rateLimitHits++;
     if (retryCount < maxRetries) {
@@ -1676,7 +1676,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
         allResults.push(...waveResults.flat());
 
-        // Small delay between waves to avoid WAF
+        // Small delay between waves to stay within the server's rate limits
         if (i + PARALLEL_CHUNKS < chunks.length) {
           await new Promise(r => setTimeout(r, 500));
         }

@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
-  "name": "HD Clearance Scanner",
+  "name": "Penny & Clearance Finder",
   "version": "1.1",
-  "description": "Find hidden clearance deals at your local Home Depot",
+  "description": "Find in-store clearance and penny markdowns at your local home-improvement store. Works on homedepot.com (unofficial).",
   "permissions": [
     "storage",
     "unlimitedStorage",

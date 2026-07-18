@@ -8,10 +8,10 @@
   <style>
     :root {
       /* Aisle-sign palette */
-      --orange: #f96302;
-      --orange-deep: #d54f00;
-      --orange-soft: #fff1e6;
-      --orange-glow: rgba(249, 99, 2, 0.18);
+      --brand: #0f857a;
+      --brand-deep: #0a655d;
+      --brand-soft: #e4f4f1;
+      --brand-glow: rgba(15, 133, 122, 0.20);
       --copper: #a95f2e;
       --copper-deep: #8a4b20;
       --copper-soft: #f9ede2;
@@ -51,10 +51,10 @@
       line-height: 1.5;
     }
 
-    /* ===== HEADER — orange aisle sign ===== */
+    /* ===== HEADER — aisle sign ===== */
     .header {
       position: relative;
-      background: var(--orange);
+      background: var(--brand);
       background-image: repeating-linear-gradient(
         -55deg,
         rgba(255, 255, 255, 0.05) 0px,
@@ -66,7 +66,7 @@
       display: flex;
       align-items: center;
       gap: 12px;
-      border-bottom: 3px solid #b34200;
+      border-bottom: 3px solid #084f48;
     }
     .header-logo {
       width: 38px;
@@ -93,14 +93,14 @@
       text-shadow: 0 1px 0 rgba(0, 0, 0, 0.15);
     }
     .header-subtitle {
-      color: #ffe3cd;
+      color: #cceae5;
       font-size: 11px;
       font-weight: 500;
       margin-top: 1px;
     }
     .header-badge {
       font-family: var(--font-display);
-      color: #ffd9bd;
+      color: #bfe6e0;
       font-size: 11px;
       font-weight: 600;
       letter-spacing: 0.5px;
@@ -141,7 +141,7 @@
       content: "";
       width: 4px;
       height: 12px;
-      background: var(--orange);
+      background: var(--brand);
       border-radius: 1px;
     }
 
@@ -161,8 +161,8 @@
     }
     .store-search-input:focus {
       outline: none;
-      border-color: var(--orange);
-      box-shadow: 0 0 0 3px var(--orange-glow);
+      border-color: var(--brand);
+      box-shadow: 0 0 0 3px var(--brand-glow);
     }
     .store-search-input::placeholder { color: var(--ink-3); font-weight: 400; }
     .btn-search-store {
@@ -201,13 +201,13 @@
       transition: background 0.1s;
     }
     .store-result-item:last-child { border-bottom: none; }
-    .store-result-item:hover { background: var(--orange-soft); }
+    .store-result-item:hover { background: var(--brand-soft); }
     .store-result-name { font-size: 13px; font-weight: 600; color: var(--ink); }
     .store-result-detail { font-size: 11px; color: var(--ink-2); margin-top: 1px; }
     .store-result-distance {
       font-family: var(--font-display);
       font-size: 13px;
-      color: var(--orange-deep);
+      color: var(--brand-deep);
       font-weight: 700;
     }
 
@@ -216,7 +216,7 @@
       padding: 10px 12px;
       background: var(--surface);
       border: 1px solid var(--line);
-      border-left: 4px solid var(--orange);
+      border-left: 4px solid var(--brand);
       border-radius: 6px;
     }
     .selected-store-name {
@@ -242,7 +242,7 @@
     .btn-primary {
       width: 100%;
       padding: 13px 16px;
-      background: var(--orange);
+      background: var(--brand);
       color: white;
       border: none;
       border-radius: 7px;
@@ -259,7 +259,7 @@
       gap: 8px;
       box-shadow: var(--shadow-btn);
     }
-    .btn-primary:hover { background: var(--orange-deep); }
+    .btn-primary:hover { background: var(--brand-deep); }
     .btn-primary:active { transform: translateY(1px); box-shadow: none; }
     .btn-primary:disabled { background: #c9c4b4; box-shadow: none; cursor: not-allowed; }
     .btn-primary svg { width: 16px; height: 16px; }
@@ -468,7 +468,7 @@
       display: none;
     }
     #progressBar {
-      background: var(--orange);
+      background: var(--brand);
       background-image: repeating-linear-gradient(
         -55deg,
         rgba(255, 255, 255, 0.25) 0px,
@@ -556,7 +556,7 @@
       width: auto;
     }
     .tab:hover { color: var(--ink-2); }
-    .tab.active { color: var(--ink); border-bottom-color: var(--orange); }
+    .tab.active { color: var(--ink); border-bottom-color: var(--brand); }
 
     /* ===== TAB PANELS ===== */
     .tab-panel {
@@ -586,8 +586,8 @@
       font-family: var(--font-display);
       font-size: 13px;
       font-weight: 700;
-      color: var(--orange-deep);
-      background: var(--orange-soft);
+      color: var(--brand-deep);
+      background: var(--brand-soft);
       padding: 2px 10px;
       border-radius: 20px;
       white-space: nowrap;
@@ -713,7 +713,7 @@
       color: var(--ink);
       cursor: pointer;
     }
-    .filter-select:focus { outline: none; border-color: var(--orange); }
+    .filter-select:focus { outline: none; border-color: var(--brand); }
 
     /* ===== COMPARE & HISTORY ===== */
     .compare-item { padding: 10px 14px; border-bottom: 1px solid var(--line-soft); }
@@ -749,7 +749,7 @@
     }
     .history-date { font-size: 10px; color: var(--ink-3); }
     .history-meta { font-size: 11px; margin-top: 4px; color: var(--ink-2); }
-    .history-found { color: var(--orange-deep); font-weight: 700; }
+    .history-found { color: var(--brand-deep); font-weight: 700; }
 
     /* ===== EMPTY STATE ===== */
     .empty-state { text-align: center; padding: 30px 20px; color: var(--ink-3); }
@@ -777,7 +777,7 @@
       display: inline-block;
       width: 7px;
       height: 7px;
-      background: var(--orange);
+      background: var(--brand);
       border-radius: 50%;
       margin-right: 7px;
       animation: pulse 1.2s ease-in-out infinite;
@@ -934,15 +934,15 @@
   <div class="header">
     <div class="header-logo">
       <svg viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
-        <path d="M20.59 13.41 11 3.83A2 2 0 0 0 9.58 3.24H5a2 2 0 0 0-2 2v4.58c0 .53.21 1.04.59 1.42l9.58 9.58a2 2 0 0 0 2.83 0l4.59-4.58a2 2 0 0 0 0-2.83z" stroke="#f96302" stroke-width="2" stroke-linejoin="round"/>
-        <circle cx="7.5" cy="7.5" r="1.5" fill="#f96302"/>
+        <path d="M20.59 13.41 11 3.83A2 2 0 0 0 9.58 3.24H5a2 2 0 0 0-2 2v4.58c0 .53.21 1.04.59 1.42l9.58 9.58a2 2 0 0 0 2.83 0l4.59-4.58a2 2 0 0 0 0-2.83z" stroke="#0f857a" stroke-width="2" stroke-linejoin="round"/>
+        <circle cx="7.5" cy="7.5" r="1.5" fill="#0f857a"/>
       </svg>
     </div>
     <div class="header-text">
-      <div class="header-title">Clearance Scanner</div>
-      <div class="header-subtitle">Hidden markdowns at your Home Depot</div>
+      <div class="header-title">Penny &amp; Clearance Finder</div>
+      <div class="header-subtitle">In-store clearance &amp; penny markdowns</div>
     </div>
-    <div class="header-badge">v1.0</div>
+    <div class="header-badge">v1.1</div>
   </div>
 
   <div class="content">
@@ -995,7 +995,7 @@
       <div class="resume-banner-title">Pick up where you left off?</div>
       <div class="resume-banner-info" id="resumeInfo"></div>
       <div class="btn-row">
-        <button id="resumeBtn" style="background: var(--orange); color: white;">Resume Scan</button>
+        <button id="resumeBtn" style="background: var(--brand); color: white;">Resume Scan</button>
         <button id="discardBtn" style="background: var(--line); color: var(--ink-2);">Discard</button>
       </div>
     </div>
