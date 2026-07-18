@@ -55,9 +55,9 @@ and ready to paste.
 
 ## Required listing assets (not in repo — create before submitting)
 
-- [ ] At least one screenshot, 1280×800 or 640×400 (PNG/JPEG). The popup is
-      420px wide, so compose it on a padded/branded background at the required
-      size rather than a raw 420px capture.
+- [x] Two 1280×800 screenshots are provided in `store-assets/`
+      (`store-screenshot-1.png`, `store-screenshot-2.png`) — the popup composed
+      on a branded background. Upload these in the dashboard.
 - [ ] 128×128 store icon — `icon128.png` can be reused.
 - [ ] Optional: small promo tile 440×280.
 - [ ] Detailed description (expand on the summary; state clearly that it is
