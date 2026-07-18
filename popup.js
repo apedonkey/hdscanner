@@ -702,7 +702,15 @@ document.addEventListener('DOMContentLoaded', async () => {
   $('sitemapScanBtn').addEventListener('click', startSitemapScan);
   $('stopBtn').addEventListener('click', stopScan);
   $('checkSkusOnlyBtn').addEventListener('click', startCheckSkusOnly);
-  $('pennyScanBtn').addEventListener('click', startPennyScan);
+  $('pennyScanBtn').addEventListener('click', showPennyDisclaimer);
+  $('pennyDisclaimerConfirm').addEventListener('click', () => {
+    hidePennyDisclaimer();
+    startPennyScan();
+  });
+  $('pennyDisclaimerCancel').addEventListener('click', hidePennyDisclaimer);
+  $('pennyDisclaimerModal').addEventListener('click', (e) => {
+    if (e.target.id === 'pennyDisclaimerModal') hidePennyDisclaimer();
+  });
   $('testConnectionBtn').addEventListener('click', testApiConnection);
   $('downloadFulfillmentLogBtn').addEventListener('click', downloadFulfillmentLog);
   $('verifyDetectionBtn').addEventListener('click', verifyPennyDetection);
@@ -1140,6 +1148,14 @@ async function startCheckSkusOnly() {
 }
 
 // ==================== PENNY SCAN ====================
+
+function showPennyDisclaimer() {
+  $('pennyDisclaimerModal').classList.add('open');
+}
+
+function hidePennyDisclaimer() {
+  $('pennyDisclaimerModal').classList.remove('open');
+}
 
 async function startPennyScan() {
   const storeId = $('storeId').value.trim();
