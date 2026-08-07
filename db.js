@@ -649,29 +649,6 @@ async function countFulfillmentLog(scanId = null) {
   });
 }
 
-// Export all data as JSON
-async function exportAllData() {
-  const database = await initDB();
-
-  // getAll on price_history wrapped so a failure rejects instead of hanging.
-  const priceHistory = await new Promise((resolve, reject) => {
-    const tx = database.transaction('price_history', 'readonly');
-    const store = tx.objectStore('price_history');
-    const request = store.getAll();
-    request.onsuccess = () => resolve(request.result);
-    request.onerror = () => reject(request.error);
-  });
-
-  return {
-    exportDate: new Date().toISOString(),
-    items: await getAllItems(),
-    priceHistory,
-    scans: await getScanHistory(null, 1000),
-    watchlist: await getWatchlist(),
-    fulfillmentLog: await getFulfillmentLog()
-  };
-}
-
 // Make functions available globally
 window.HDDB = {
   init: initDB,
@@ -704,8 +681,7 @@ window.HDDB = {
   countFulfillmentLog,
   // Utilities
   getStats,
-  clearAllData,
-  exportAllData
+  clearAllData
 };
 
 // Initialize on load

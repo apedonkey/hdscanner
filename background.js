@@ -53,10 +53,24 @@ chrome.storage.onChanged.addListener((changes, area) => {
 
 let telegramConfig = null;
 let telegramLastError = null;
+// getUpdates cursor. Declared here rather than with the rest of the bot-control
+// state because it MUST be restored before the first getUpdates goes out: a poll
+// sent with a stale 0 cursor uses offset 1, which makes Telegram redeliver every
+// update it still holds (24h retention) and re-sends a menu for each one.
+let telegramLastUpdateId = 0;
 
-const telegramConfigReady = chrome.storage.local.get(['telegramConfig']).then((data) => {
-  telegramConfig = data.telegramConfig || null;
-});
+// Single readiness gate for everything the poll loop needs. Reading the cursor
+// in a separate storage call raced the loop's first request and lost.
+const telegramConfigReady = chrome.storage.local
+  .get(['telegramConfig', 'telegramLastUpdateId'])
+  .then((data) => {
+    telegramConfig = data.telegramConfig || null;
+    // A connect that landed while this read was in flight already set a newer
+    // cursor in memory — never move it backwards.
+    if (typeof data.telegramLastUpdateId === 'number' && data.telegramLastUpdateId > telegramLastUpdateId) {
+      telegramLastUpdateId = data.telegramLastUpdateId;
+    }
+  });
 
 function telegramEnabled() {
   return !!(telegramConfig && telegramConfig.botToken && telegramConfig.chatId);
@@ -1107,11 +1121,19 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sendResponse({ ok: false, error: 'Missing token or chat id' });
         return;
       }
+      // update_id sequences are per-bot, so a cursor from a previous bot is
+      // meaningless here — carrying it over leaves offset above everything the
+      // new bot will ever send, and it silently answers nothing.
+      const sameBot = telegramConfig?.botToken === cfg.botToken;
       telegramConfig = cfg;
       telegramLastError = null;
       // Skip past the /start message so the control plane doesn't replay it
-      if (typeof request.lastUpdateId === 'number' && request.lastUpdateId > telegramLastUpdateId) {
-        telegramLastUpdateId = request.lastUpdateId;
+      if (typeof request.lastUpdateId === 'number') {
+        telegramLastUpdateId = sameBot
+          ? Math.max(telegramLastUpdateId, request.lastUpdateId)
+          : request.lastUpdateId;
+      } else if (!sameBot) {
+        telegramLastUpdateId = 0;
       }
       await chrome.storage.local.set({ telegramConfig: cfg, telegramLastUpdateId });
       telegramPollLoop();
@@ -1125,7 +1147,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (async () => {
       telegramConfig = null;
       telegramLastError = null;
-      await chrome.storage.local.remove(['telegramConfig']);
+      // Drop the cursor with the config — it only means anything to the bot that
+      // issued it, and a stale one mutes whichever bot is connected next.
+      telegramLastUpdateId = 0;
+      await chrome.storage.local.remove(['telegramConfig', 'telegramLastUpdateId']);
       // Poll loop notices the missing config and exits on its next iteration
       sendResponse({ ok: true });
     })();
@@ -1133,13 +1158,18 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'telegramGetStatus') {
-    sendResponse({
-      configured: telegramEnabled(),
-      botUsername: telegramConfig?.botUsername || null,
-      chatLabel: telegramConfig?.chatLabel || null,
-      dealsChannel: telegramConfig?.dealsChannel || null,
-      lastError: telegramLastError
-    });
+    // Opening the popup often cold-starts this worker, and answering before the
+    // stored config has loaded reports a connected bot as "Not connected".
+    (async () => {
+      await telegramConfigReady;
+      sendResponse({
+        configured: telegramEnabled(),
+        botUsername: telegramConfig?.botUsername || null,
+        chatLabel: telegramConfig?.chatLabel || null,
+        dealsChannel: telegramConfig?.dealsChannel || null,
+        lastError: telegramLastError
+      });
+    })();
     return true;
   }
 
@@ -1229,7 +1259,8 @@ let telegramProgressEditMinMs = 8000;
 
 // Runtime state
 let telegramPollActive = false;
-let telegramLastUpdateId = 0;
+// telegramLastUpdateId lives with the config at the top of this file — it has to
+// be restored by telegramConfigReady, before the poll loop's first request.
 // Context for editing the running scan's progress message.
 // Set when a scan is launched from Telegram, cleared on finalize.
 // Shape: { chatId, messageId, lastEditMs, storeId, storeName }
@@ -1237,13 +1268,6 @@ let telegramProgressCtx = null;
 // Store search results held in memory until the user picks one — we do NOT
 // persist all search results into savedStores (that polluted the store list).
 let telegramPendingStores = {};
-
-// Restore the last-seen update ID so we don't replay history on restart
-chrome.storage.local.get(['telegramLastUpdateId'], (data) => {
-  if (typeof data.telegramLastUpdateId === 'number') {
-    telegramLastUpdateId = data.telegramLastUpdateId;
-  }
-});
 
 // Only the connected chat may control the scanner.
 function isChatAuthorized(chatId) {
@@ -1347,6 +1371,11 @@ async function telegramSendOrEdit(chatId, editMessageId, text, replyMarkup) {
       reply_markup: replyMarkup
     });
     if (edit && edit.ok) return edit.result;
+    // Editing a message to content it already has is a no-op, not a failure.
+    // Telegram reports it as 400 "message is not modified"; falling through to
+    // sendMessage here posts a duplicate every time the user re-opens the menu
+    // they are already looking at.
+    if (edit && /message is not modified/i.test(edit.description || '')) return null;
   }
   const send = await telegramApi('sendMessage', {
     chat_id: chatId,
@@ -1898,19 +1927,48 @@ async function telegramDispatchUpdate(update) {
   }
 }
 
-// Long-poll getUpdates while a config exists. The in-flight fetch keeps the
-// worker alive (it counts as active work in MV3). Exits when disconnected or
-// the token turns invalid; the popup can reconnect at any time.
-async function telegramPollLoop() {
-  if (telegramPollActive) return;
-  await telegramConfigReady;
-  if (!telegramEnabled()) {
-    console.log('[Telegram] Not connected, poll loop not started');
+// Learn Telegram's current update head without dispatching anything. Used when
+// no cursor survived (fresh connect, or the worker died before the first batch
+// was persisted): Telegram still holds up to 24h of unconfirmed updates, and
+// dispatching them re-sends a menu for every one. offset:-1 returns only the
+// newest update and confirms nothing; the loop's next poll (offset head+1)
+// clears the whole backlog server-side.
+async function telegramSkipBacklog() {
+  const resp = await telegramApi('getUpdates', { offset: -1, timeout: 0 });
+  if (!resp || !resp.ok) {
+    console.warn('[Telegram] Backlog skip failed:', (resp && resp.description) || 'no response');
     return;
   }
+  if (!Array.isArray(resp.result) || resp.result.length === 0) return;
+  const head = resp.result[resp.result.length - 1];
+  if (typeof head.update_id !== 'number' || head.update_id <= telegramLastUpdateId) return;
+  telegramLastUpdateId = head.update_id;
+  await chrome.storage.local.set({ telegramLastUpdateId });
+  console.log('[Telegram] Skipped backlog up to update', telegramLastUpdateId);
+}
+
+// Long-poll getUpdates while a config exists. MV3 will kill this worker
+// eventually no matter what the loop does, so correctness rests on the cursor
+// being persisted before any handler runs — not on the worker surviving. The
+// 1-minute telegramPollCheck alarm restarts the loop after a death.
+// Exits when disconnected or the token turns invalid; the popup can reconnect.
+async function telegramPollLoop() {
+  // Claim the slot synchronously. Checking the flag and then awaiting before
+  // setting it let two callers (e.g. telegramSaveConfig + the storage.onChanged
+  // it triggers) both pass the check and run duplicate loops, which delivers
+  // every update twice and makes Telegram 409 one poller against the other.
+  if (telegramPollActive) return;
   telegramPollActive = true;
-  console.log('[Telegram] Poll loop started');
+  let started = false;
   try {
+    await telegramConfigReady;
+    if (!telegramEnabled()) {
+      console.log('[Telegram] Not connected, poll loop not started');
+      return;
+    }
+    started = true;
+    console.log('[Telegram] Poll loop started');
+    if (telegramLastUpdateId === 0) await telegramSkipBacklog();
     while (true) {
       // Config can be swapped or removed at any time — re-read each iteration
       if (!telegramEnabled()) {
@@ -1946,19 +2004,30 @@ async function telegramPollLoop() {
           continue;
         }
         const data = await resp.json();
-        if (data && data.ok && Array.isArray(data.result)) {
-          for (const update of data.result) {
-            if (typeof update.update_id === 'number' && update.update_id > telegramLastUpdateId) {
-              telegramLastUpdateId = update.update_id;
+        if (data && data.ok && Array.isArray(data.result) && data.result.length > 0) {
+          const batch = data.result;
+          const maxId = batch.reduce(
+            (max, u) => (typeof u.update_id === 'number' && u.update_id > max ? u.update_id : max),
+            telegramLastUpdateId
+          );
+          // Advance and persist the cursor BEFORE dispatching. Handlers send
+          // messages and can run for a while; if the worker is killed part-way
+          // through, the next start must resume past this batch rather than
+          // replay it. Losing an unhandled command beats spamming the chat.
+          if (maxId > telegramLastUpdateId) {
+            telegramLastUpdateId = maxId;
+            try {
+              await chrome.storage.local.set({ telegramLastUpdateId });
+            } catch (e) {
+              console.warn('[Telegram] Could not persist cursor:', (e && e.message) || e);
             }
+          }
+          for (const update of batch) {
             try {
               await telegramDispatchUpdate(update);
             } catch (e) {
               console.error('[Telegram] Handler error:', e);
             }
-          }
-          if (data.result.length > 0) {
-            chrome.storage.local.set({ telegramLastUpdateId }).catch(() => {});
           }
         }
       } catch (e) {
@@ -1968,7 +2037,7 @@ async function telegramPollLoop() {
     }
   } finally {
     telegramPollActive = false;
-    console.log('[Telegram] Poll loop exited');
+    if (started) console.log('[Telegram] Poll loop exited');
   }
 }
 

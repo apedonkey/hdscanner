@@ -976,7 +976,7 @@ function renderResults() {
     ? [...verifiedItems].sort((a, b) => (a.onlinePrice || 0) - (b.onlinePrice || 0))
     : [...verifiedItems].sort((a, b) => b.percentOff - a.percentOff);
 
-  container.innerHTML = sorted.slice(0, 50).map(item => {
+  container.innerHTML = sorted.map(item => {
     const isPennyItem = item.pennyConfidence === 'confirmed';
     const name = escapeHtml(item.name || '');
     const shortName = name.length > 60 ? name.substring(0, 60) + '…' : name;
@@ -1010,10 +1010,6 @@ function renderResults() {
     </div>
   `;
   }).join('');
-
-  if (sorted.length > 50) {
-    container.innerHTML += `<div style="padding: 14px; text-align: center; color: var(--ink-3); font-size: 12px;">…and ${sorted.length - 50} more. Export from the History tab to see everything.</div>`;
-  }
 }
 
 async function sendToContentScript(message, retries = 3) {
@@ -1233,6 +1229,7 @@ function stopScan() {
 // Telegram limit, so a shared bot can't serve multiple installs).
 
 let tgDetectTimer = null;
+let tgDetectInFlight = false; // a detect round-trip can outlast the 2s interval
 let tgPending = null; // { botToken, botUsername } while waiting for /start
 let tgCardInitialized = false; // set once the initial open/closed state is applied
 
@@ -1324,14 +1321,19 @@ async function tgConnect() {
 
 function tgStartDetectLoop() {
   tgStopDetectLoop();
+  tgDetectInFlight = false;
   const startedAt = Date.now();
   tgDetectTimer = setInterval(async () => {
+    // A detect round-trip slower than the interval used to let a second tick
+    // find the same /start and save the config twice — two "Connected!" sends.
+    if (tgDetectInFlight) return;
     if (!tgPending) { tgStopDetectLoop(); return; }
     // Give up after 3 minutes of waiting
     if (Date.now() - startedAt > 180000) {
       tgCancelConnect('Timed out waiting for your /start message. Try connecting again.');
       return;
     }
+    tgDetectInFlight = true;
     try {
       const resp = await chrome.runtime.sendMessage({ action: 'telegramDetectChat', botToken: tgPending.botToken });
       if (resp?.ok && resp.chat) {
@@ -1357,6 +1359,8 @@ function tgStartDetectLoop() {
       // resp.waiting === true → keep polling
     } catch (e) {
       console.log('Telegram detect poll failed:', e);
+    } finally {
+      tgDetectInFlight = false;
     }
   }, 2000);
 }
@@ -1425,7 +1429,14 @@ async function tgRemoveChannel() {
 async function tgDisconnect() {
   if (!confirm('Disconnect Telegram? You\'ll stop getting deal alerts until you reconnect.')) return;
   await chrome.runtime.sendMessage({ action: 'telegramDisconnect' });
-  tgShowSection('disconnected');
+  // Abandon any half-finished connect, then re-read from the background rather
+  // than just swapping sections — the card header sits outside those sections
+  // and kept showing "Connected · @oldbot" after a disconnect.
+  tgStopDetectLoop();
+  tgPending = null;
+  $('tgConnectedDetail').textContent = '';
+  $('tgTokenInput').value = '';
+  await tgRefreshStatus();
   setStatus('Telegram disconnected.');
 }
 
@@ -1497,7 +1508,7 @@ async function loadAllItems() {
     const now = Date.now();
     const dayAgo = now - 24 * 60 * 60 * 1000;
 
-    container.innerHTML = items.slice(0, 100).map(item => {
+    container.innerHTML = items.map(item => {
       const isNew = item.firstSeen > dayAgo;
       const storeName = escapeHtml(STORE_NAMES[item.storeId] || item.storeId);
       const priceDropBadge = item.priceDropped
@@ -1519,10 +1530,6 @@ async function loadAllItems() {
       `;
     }).join('');
 
-    if (items.length > 100) {
-      container.innerHTML += `<div style="padding: 14px; text-align: center; color: var(--ink-3); font-size: 12px;">…and ${items.length - 100} more</div>`;
-    }
-
   } catch (e) {
     container.innerHTML = `<div style="color: var(--red); padding: 14px; font-size: 12px;">Couldn't load saved deals. Refresh the Home Depot tab and try again.</div>`;
   }
@@ -1540,7 +1547,7 @@ async function loadCompareStores() {
       return;
     }
 
-    container.innerHTML = response.comparison.slice(0, 50).map(item => {
+    container.innerHTML = response.comparison.map(item => {
       const storesList = item.stores.map((s, i) => {
         const name = escapeHtml(STORE_NAMES[s.storeId] || s.storeId);
         return `<span class="store-price ${i === 0 ? 'best' : ''}">${name}: $${s.price.toFixed(2)}</span>`;
@@ -1597,25 +1604,97 @@ async function loadScanHistory() {
   }
 }
 
+// Flatten a stored item into exactly the numbers the Results card displays.
+// Derived here rather than per-column so the export can't drift from the UI —
+// a penny hit shows $0.01 on the card whatever price was recorded, and the
+// saving has to come off that same figure.
+function exportRow(item) {
+  const isPenny = item.pennyConfidence === 'confirmed';
+  const clearance = isPenny ? 0.01 : (item.clearancePrice ?? 0);
+  const online = item.onlinePrice ?? 0;
+  return {
+    store: STORE_NAMES[item.storeId] || item.storeId,
+    brand: item.brand,
+    name: item.name,
+    variant: item.variant,
+    clearance: clearance.toFixed(2),
+    online: online.toFixed(2),
+    percentOff: item.percentOff ?? 0,
+    save: (item.dollarOff ?? Math.max(0, online - clearance)).toFixed(2),
+    quantity: item.quantity,
+    penny: isPenny ? 'YES' : '',
+    sku: item.storeSkuNumber,
+    itemId: item.itemId,
+    lastSeen: item.lastSeen ? new Date(item.lastSeen).toLocaleDateString() : '',
+    url: item.url
+  };
+}
+
+// One column per field on the Results item card, in the order the card reads
+// them. Store and Last Seen are the two bits of context the card gets from the
+// screen around it — the export spans every store and every scan.
+const EXPORT_COLUMNS = [
+  ['Store', 'store'],
+  ['Brand', 'brand'],
+  ['Name', 'name'],
+  ['Variant', 'variant'],
+  ['Clearance', 'clearance'],
+  ['Online', 'online'],
+  ['% Off', 'percentOff'],
+  ['Save', 'save'],
+  ['In Stock', 'quantity'],
+  ['Penny', 'penny'],
+  ['SKU', 'sku'],
+  ['Item ID', 'itemId'],
+  ['Last Seen', 'lastSeen'],
+  ['URL', 'url']
+];
+
+// RFC 4180 quoting. Product names routinely contain commas and quotes, and a
+// name starting with = + - or @ is executed as a formula on open, so those get
+// an apostrophe first — skipped for plain numbers, which are never a risk.
+function csvCell(value) {
+  let s = value == null ? '' : String(value);
+  if (/^[=+\-@]/.test(s) && !/^-?\d+(\.\d+)?$/.test(s)) s = `'${s}`;
+  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
 async function exportDatabase() {
   try {
-    const response = await sendToContentScript({ action: 'db_exportAll' });
+    const response = await sendToContentScript({ action: 'db_getAllItems' });
 
     if (!response?.success) {
       showError('Export failed: ' + (response?.error || 'unknown error'));
       return;
     }
 
-    const blob = new Blob([JSON.stringify(response.data, null, 2)], { type: 'application/json' });
+    const items = response.items || [];
+    if (items.length === 0) {
+      setStatus('Nothing to export yet — run a scan first.');
+      return;
+    }
+
+    // Same order as the Results list: biggest markdown first
+    const sorted = [...items].sort((a, b) => (b.percentOff ?? 0) - (a.percentOff ?? 0));
+    const rows = [
+      EXPORT_COLUMNS.map(([header]) => csvCell(header)).join(','),
+      ...sorted.map(item => {
+        const row = exportRow(item);
+        return EXPORT_COLUMNS.map(([, field]) => csvCell(row[field])).join(',');
+      })
+    ];
+
+    // Leading BOM so Excel reads the UTF-8 in product names; CRLF per RFC 4180
+    const blob = new Blob(['\uFEFF' + rows.join('\r\n')], { type: 'text/csv;charset=utf-8' });
     const url = URL.createObjectURL(blob);
 
     const a = document.createElement('a');
     a.href = url;
-    a.download = `hd_clearance_database_${new Date().toISOString().split('T')[0]}.json`;
+    a.download = `hd_clearance_items_${new Date().toISOString().split('T')[0]}.csv`;
     a.click();
 
     URL.revokeObjectURL(url);
-    setStatus('Export downloaded.');
+    setStatus(`Exported ${items.length.toLocaleString()} item${items.length === 1 ? '' : 's'}.`);
   } catch (e) {
     showError('Export failed: ' + e.message);
   }

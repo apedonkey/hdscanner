@@ -1443,19 +1443,6 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     return true;
   }
 
-  // Export all data
-  if (request.action === 'db_exportAll') {
-    (async () => {
-      try {
-        const data = await window.HDDB.exportAllData();
-        sendResponse({ success: true, data });
-      } catch (e) {
-        sendResponse({ success: false, error: e.message });
-      }
-    })();
-    return true;
-  }
-
   // Clear database
   if (request.action === 'db_clearAll') {
     (async () => {
