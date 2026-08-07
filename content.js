@@ -5,6 +5,22 @@ try {
 
 const API_URL = "https://apionline.homedepot.com/federation-gateway/graphql";
 
+// Pin a product link to the store it was found at. store-force.js reads this
+// parameter at document_start and sets HD's store cookies from it.
+// Accepts an absolute URL or a bare canonicalUrl path, and is idempotent —
+// hand-rolled `${url}?storeId=` appends produced a second "?" whenever the
+// canonical URL already carried a query string.
+function withStoreId(url, storeId) {
+  if (!url || !storeId) return url || null;
+  try {
+    const u = new URL(url, 'https://www.homedepot.com');
+    u.searchParams.set('storeId', String(storeId));
+    return u.toString();
+  } catch (e) {
+    return url;
+  }
+}
+
 // ==================== SKU INVENTORY CACHE ====================
 // Cache discovered SKUs per store - each store maintains its own SKU list
 const SKU_INVENTORY = {
@@ -570,7 +586,7 @@ function parseProductResult(product, itemId, storeId) {
         brand: identifiers.brandName || null,
         storeSkuNumber: identifiers.storeSkuNumber || '',
         modelNumber: identifiers.modelNumber || '',
-        url: identifiers.canonicalUrl ? `https://www.homedepot.com${identifiers.canonicalUrl}` : null
+        url: withStoreId(identifiers.canonicalUrl, storeId)
       }
     };
   }
@@ -623,7 +639,7 @@ function parseProductResult(product, itemId, storeId) {
     quantity, storeName, isInStock, possiblePenny, isAdvertised,
     hasBopis, pickupFulfillable, hasDelivery, deliveryFulfillable,
     inventoryIsUnavailable, yellowTag, truePenny,
-    url: `https://www.homedepot.com${identifiers.canonicalUrl || '/p/' + itemId}?storeId=${storeId}`
+    url: withStoreId(identifiers.canonicalUrl || `/p/${itemId}`, storeId)
   };
 
   if (clearance.value) {
@@ -1861,7 +1877,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
                 name: ids.productLabel || null,
                 brand: ids.brandName || null,
                 storeSkuNumber: ids.storeSkuNumber || '',
-                url: ids.canonicalUrl ? `https://www.homedepot.com${ids.canonicalUrl}` : null,
+                url: withStoreId(ids.canonicalUrl, storeId),
                 discontinued: avail.discontinued || false,
                 availType: avail.type || null,
                 storeQuantity,

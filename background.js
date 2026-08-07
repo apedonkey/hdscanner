@@ -76,6 +76,23 @@ function telegramEnabled() {
   return !!(telegramConfig && telegramConfig.botToken && telegramConfig.chatId);
 }
 
+// Pin a product link to the store it was found at. store-force.js reads this
+// parameter at document_start and sets HD's store cookies from it. Accepts an
+// absolute URL or a bare canonicalUrl path, and is idempotent — hand-rolled
+// `${url}?storeId=` appends produced a second "?" whenever the incoming URL
+// already carried a query string. Mirrors the copy in content.js; the two run
+// in separate contexts with no shared module.
+function withStoreId(url, storeId) {
+  if (!url || !storeId) return url || null;
+  try {
+    const u = new URL(url, 'https://www.homedepot.com');
+    u.searchParams.set('storeId', String(storeId));
+    return u.toString();
+  } catch (e) {
+    return url;
+  }
+}
+
 // Telegram messages use parse_mode HTML — any dynamic text (product names,
 // store names, user queries) must be escaped or Telegram rejects the message.
 function escapeTg(value) {
@@ -157,9 +174,20 @@ function formatClearanceItem(item, storeId) {
   const storeName = escapeTg(STORE_NAMES[storeId] || storeId);
   const percentOff = Math.round(item.percentOff || 0);
   const locationLine = item.location ? `\n📍 ${escapeTg(item.location)}` : '';
+  const clearancePrice = item.clearancePrice || 0;
+  const onlinePrice = item.onlinePrice || 0;
+  // Pre-discount price, same as the item card shows it. The saving is derived
+  // from the two prices printed on this line rather than item.dollarOff (which
+  // defaults to 0 when HD omits it) so the arithmetic in the message adds up.
+  const wasStr = onlinePrice > clearancePrice ? ` — was $${onlinePrice.toFixed(2)}` : '';
+  const saved = Math.max(0, onlinePrice - clearancePrice);
+  const detail = [
+    percentOff ? `${percentOff}% off` : '',
+    saved > 0 ? `save $${saved.toFixed(2)}` : ''
+  ].filter(Boolean).join(', ');
 
   return `🏷️ <b>${escapeTg(item.name)}</b>
-💰 $${(item.clearancePrice || 0).toFixed(2)} (${percentOff}% off)
+💰 $${clearancePrice.toFixed(2)}${wasStr}${detail ? ` (${detail})` : ''}
 🏪 <b>${storeName}</b> (#${escapeTg(storeId)})${locationLine}
 📦 Qty: ${escapeTg(item.quantity)} | SKU: ${escapeTg(item.itemId)}
 🔗 <a href="${escapeTg(item.url)}">View Product</a>`;
@@ -615,9 +643,7 @@ async function runScanLoop(state, skus) {
               storeSkuNumber: result.storeSkuNumber || '',
               name: result.name || `SKU ${sku}`,
               brand: result.brand || 'Unknown',
-              url: result.url
-                ? `${result.url}?storeId=${state.storeId}`
-                : `https://www.homedepot.com/p/${sku}?storeId=${state.storeId}`,
+              url: withStoreId(result.url || `/p/${sku}`, state.storeId),
               onlinePrice: pricingValue,
               clearancePrice: 0.01,
               dollarOff: pricingValue > 0 ? pricingValue - 0.01 : 0,
@@ -740,7 +766,7 @@ async function runScanLoop(state, skus) {
                 ...lightData,
                 name: ids.name || `SKU ${sku}`,
                 brand: ids.brand || 'Unknown',
-                url: ids.url ? `${ids.url}?storeId=${state.storeId}` : `https://www.homedepot.com/p/${sku}?storeId=${state.storeId}`,
+                url: withStoreId(ids.url || `/p/${sku}`, state.storeId),
                 category: 'Background Scan'
               });
             }
@@ -755,7 +781,7 @@ async function runScanLoop(state, skus) {
                 ...lightData,
                 name: `SKU ${sku}`,
                 brand: 'Unknown',
-                url: `https://www.homedepot.com/p/${sku}?storeId=${state.storeId}`,
+                url: withStoreId(`/p/${sku}`, state.storeId),
                 category: 'Background Scan (light)'
               });
             }
