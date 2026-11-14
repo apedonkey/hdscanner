@@ -324,6 +324,14 @@ let scanStopped = false;
 // (rate-limited / HTTP / timeout) rather than genuinely being empty.
 let rateLimitedCategoryCount = 0;
 
+// True for application/json and any +json structured-syntax suffix type
+// (RFC 6839). HD's gateway now answers with the GraphQL-over-HTTP media type,
+// application/graphql-response+json, so matching application/json alone
+// rejected every valid response. An HTML block page still fails the check.
+function isJsonContentType(contentType) {
+  return /^application\/(?:[\w.-]+\+)?json\s*(?:;|$)/i.test((contentType || '').trim());
+}
+
 // Low-level GraphQL POST shared by every caller. Adds a hard request timeout,
 // unified 403/429 detection with exponential backoff, and a shared cooldown so
 // parallel callers stop hammering the endpoint while Akamai has us flagged.
@@ -380,7 +388,7 @@ async function graphqlFetch(operation, variables, query, { timeoutMs = 20000, re
 
   // Check if response is JSON
   const contentType = response.headers.get('content-type');
-  if (!contentType || !contentType.includes('application/json')) {
+  if (!isJsonContentType(contentType)) {
     console.warn(`[HD Scanner] Non-JSON response: ${contentType}`);
     return { error: 'invalid_response', errors: [{ message: 'Non-JSON response' }] };
   }
