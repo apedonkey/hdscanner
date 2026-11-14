@@ -367,8 +367,11 @@ async function graphqlFetch(operation, variables, query, { timeoutMs = 20000, re
     clearTimeout(timer);
   }
 
-  // Akamai (403) and rate limiting (429): set the shared cooldown and back off.
-  if (response.status === 403 || response.status === 429) {
+  // Akamai (403), rate limiting (429) and HD's gateway throttle (206 with a
+  // "Generic Errors API" body and no data): set the shared cooldown and back off.
+  // 206 is a 2xx, so without this it fell through as a successful response and
+  // every SKU in the chunk was recorded as an error instead of being retried.
+  if (response.status === 403 || response.status === 429 || response.status === 206) {
     rateLimitHits++;
     if (retryCount < maxRetries) {
       // Exponential backoff: 10s, 30s, 90s + random jitter

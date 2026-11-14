@@ -319,6 +319,8 @@ async function testApiConnection() {
       showConnectionResult('banner warn', `<strong>&#9888; Rate limited (403)</strong><br>Home Depot is blocking requests. Wait a few minutes before scanning again.<br>${meta}`);
     } else if (response.status === 429) {
       showConnectionResult('banner warn', `<strong>&#9888; Too many requests (429)</strong><br>You've hit the request limit. Wait 5-10 minutes.<br>${meta}`);
+    } else if (response.status === 206) {
+      showConnectionResult('banner warn', `<strong>&#9888; Throttled (206)</strong><br>Home Depot is answering with empty "Generic Errors" responses. Wait a while (15 min to a few hours) before scanning again.<br>${meta}`);
     } else if (response.ok) {
       const contentType = response.headers.get('content-type');
       if (isJsonContentType(contentType)) {
