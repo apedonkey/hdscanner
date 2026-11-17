@@ -427,6 +427,11 @@ chrome.alarms.onAlarm.addListener(async (alarm) => {
 // routed through a content script on an open homedepot.com tab (intentional:
 // requests must carry the user's real session/fingerprint).
 
+function isHomeDepotTab(tab) {
+  const url = tab.url || tab.pendingUrl || '';
+  return /^https?:\/\/([^/]+\.)?homedepot\.com(\/|$|\?|#)/i.test(url);
+}
+
 async function findHdTab() {
   // URL match-pattern filter in chrome.tabs.query silently misses tabs in
   // some states (discarded tabs, pending navigations, host-permission quirks
@@ -438,13 +443,9 @@ async function findHdTab() {
     console.warn('[Background] findHdTab: tabs.query failed:', e && e.message);
     return null;
   }
-  const isHd = (t) => {
-    const u = t.url || t.pendingUrl || '';
-    return /^https?:\/\/([^/]+\.)?homedepot\.com(\/|$|\?|#)/i.test(u);
-  };
-  const active = tabs.find(t => isHd(t) && t.active);
+  const active = tabs.find(t => isHomeDepotTab(t) && t.active);
   if (active) return active.id;
-  const any = tabs.find(isHd);
+  const any = tabs.find(isHomeDepotTab);
   if (!any) {
     // Most common cause: the tab was opened before the extension was reloaded,
     // so Chrome hasn't granted host permission for its URL to the new worker.
@@ -482,6 +483,39 @@ function sendToTab(tabId, message) {
       }
     });
   });
+}
+
+// How long to wait for a tab to answer a ping. A background tab that Chrome has
+// frozen may not answer at all.
+const TAB_PING_TIMEOUT_MS = 1500;
+
+// Ids of the Home Depot tabs in which a full scan is building its product list
+// right now. That stage runs inside the tab, so the worker has to ask.
+async function tabsBuildingProductList() {
+  let tabs;
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch (e) {
+    console.warn('[Background] tabsBuildingProductList: tabs.query failed:', e && e.message);
+    return [];
+  }
+  const answers = await Promise.all(tabs.filter(isHomeDepotTab).map(async (tab) => {
+    const pong = await Promise.race([
+      // Rejected when the tab has no content script: nothing is running there.
+      chrome.tabs.sendMessage(tab.id, { action: 'ping' }).catch(() => null),
+      new Promise((resolve) => setTimeout(() => resolve(null), TAB_PING_TIMEOUT_MS))
+    ]);
+    return pong && pong.discovering ? tab.id : null;
+  }));
+  return answers.filter((tabId) => tabId !== null);
+}
+
+// One scan at a time, for scans that start here in the worker (the Telegram
+// commands): true when prices are being checked, or when a full scan is still
+// building its product list in a tab.
+async function scanAlreadyRunning() {
+  if (scanState.running) return true;
+  return (await tabsBuildingProductList()).length > 0;
 }
 
 // Penny batch check — products() batch endpoint with penny fingerprint
@@ -1507,6 +1541,10 @@ async function telegramHandleStatus(chatId, editMessageId) {
       `🏷️ Found: ${scanState.clearanceItems.length}\n` +
       `⚠️ Errors: ${scanState.errors}\n` +
       `⏱️ Elapsed: ${formatDurationMs(elapsedMs)}`;
+  } else if ((await tabsBuildingProductList()).length > 0) {
+    text =
+      `🔎 <b>SCAN RUNNING</b>\n` +
+      `A full scan is building its product list in the Home Depot tab. The price check starts when that is done.`;
   } else {
     const data = await chrome.storage.local.get(['clearanceItems', 'scanState', 'scanSkus']);
     const lastItems = (data.clearanceItems || []).length;
@@ -1661,7 +1699,7 @@ async function telegramHandlePickStore(chatId, editMessageId, storeId) {
 }
 
 async function telegramHandleScanTrigger(chatId, storeId, useCached) {
-  if (scanState.running) {
+  if (await scanAlreadyRunning()) {
     await telegramApi('sendMessage', {
       chat_id: chatId,
       text: '⚠️ A scan is already running. Stop it first or watch its progress.',
@@ -1788,7 +1826,7 @@ async function telegramHandleScanTrigger(chatId, storeId, useCached) {
 }
 
 async function telegramHandlePennyScanTrigger(chatId, storeId) {
-  if (scanState.running) {
+  if (await scanAlreadyRunning()) {
     await telegramApi('sendMessage', {
       chat_id: chatId,
       text: '⚠️ A scan is already running. Stop it first.',
@@ -1840,7 +1878,14 @@ async function telegramHandlePennyScanTrigger(chatId, storeId) {
 }
 
 async function telegramHandleStop(chatId) {
-  if (!scanState.running) {
+  // Stop everything that is running: the price check here in the worker, and a
+  // full scan that is still building its product list in a tab.
+  const stoppedPriceCheck = stopRunningScan();
+  const listBuilders = await tabsBuildingProductList();
+  await Promise.all(listBuilders.map(
+    (tabId) => sendToTab(tabId, { action: 'stopScan' }).catch(() => {})
+  ));
+  if (!stoppedPriceCheck && listBuilders.length === 0) {
     await telegramApi('sendMessage', {
       chat_id: chatId,
       text: '💤 No scan is running.',
@@ -1848,13 +1893,6 @@ async function telegramHandleStop(chatId) {
     });
     return;
   }
-  scanState.running = false;
-  scanState.userStopped = true;
-  stopKeepAlive();
-  await chrome.storage.local.set({
-    scanState: persistableState(scanState),
-    clearanceItems: scanState.clearanceItems
-  });
   await telegramApi('sendMessage', {
     chat_id: chatId,
     text: '⛔ <b>Scan stopped</b>',

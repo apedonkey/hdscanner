@@ -574,3 +574,169 @@ test('on opening, the popup shows a running scan at once, and nothing when none 
   assert.equal(listing.popup.view.scanning, true);
   assert.match(listing.popup.status.at(-1), /building the product list/);
 });
+
+// ---------------------------------------------------------------------------
+// Scans started from Telegram, and a second Home Depot tab
+//
+// A bot command starts its scan in the background worker with no popup
+// involved, so the worker has to ask the tabs whether a full scan is building
+// its product list in one of them.
+// ---------------------------------------------------------------------------
+
+const telegramSaid = (ext, pattern) => ext.telegram.texts().filter((text) => pattern.test(text));
+
+test('a penny scan from Telegram starts normally when nothing is running', async () => {
+  const skus = skuList(2 * WAVE);
+  const ext = loadExtension({
+    telegram: true,
+    storage: savedProductList(skus),
+    respond: scriptedStore().respond,
+  });
+
+  await ext.telegram.startPennyScan();
+  await ext.idle();
+
+  assert.equal(completions(ext).length, 1);
+  assert.equal(ext.storage.scanState.scanType, 'telegram_penny');
+  assert.equal(ext.storage.scanState.checked, 2 * WAVE);
+  assert.deepEqual(telegramSaid(ext, /already running/), []);
+});
+
+test('scans from Telegram are refused while a full scan is building its product list', async () => {
+  const cachedList = savedProductList(skuList(WAVE));
+  const lone = loadExtension({ telegram: true, storage: cachedList, respond: scriptedStore().respond });
+  await runFullScanFromPopup(lone);
+
+  const store = scriptedStore();
+  const commands = [];
+  const ext = loadExtension({
+    telegram: true,
+    storage: cachedList,
+    respond: (request, n) => {
+      // On the first product-list request, send the bot three scan commands.
+      if (n === 1) {
+        commands.push(
+          ext.telegram.startPennyScan(),
+          ext.telegram.startScan({ cached: true }),
+          ext.telegram.startScan({ cached: false })
+        );
+      }
+      return store.respond(request);
+    },
+  });
+  await runFullScanFromPopup(ext);
+  await Promise.all(commands);
+
+  assert.equal(
+    telegramSaid(ext, /already running/).length, 3,
+    'each command was answered with "already running"'
+  );
+  assert.equal(
+    ext.requests.length, lone.requests.length,
+    'Home Depot was asked no more than one full scan asks'
+  );
+  assert.equal(ext.storage.scanState.scanType, 'sitemap', 'the full scan went on to check its prices');
+  assert.equal(completions(ext).length, 1);
+});
+
+test('Stop from Telegram ends a full scan that is building its product list', async () => {
+  const store = scriptedStore();
+  let stop;
+  const ext = loadExtension({
+    telegram: true,
+    respond: (request) => {
+      // Stop as the first department's product list is requested.
+      if (isProductListRequest(request)) pressStopOnce();
+      return store.respond(request);
+    },
+  });
+  const pressStopOnce = onFirst(() => true, () => { stop = ext.telegram.pressStop(); });
+
+  const discovery = await ext.popup.toTab(fullScan);
+  await stop;
+  await ext.idle();
+
+  assert.equal(discovery.stopped, true);
+  assert.equal(telegramSaid(ext, /Scan stopped/).length, 1);
+  assert.deepEqual(telegramSaid(ext, /No scan is running/), []);
+  assert.equal(
+    ext.broadcasts.filter((message) => message.action === 'startBackgroundScan').length, 0,
+    'no price check was started'
+  );
+});
+
+test('Stop from Telegram still stops a price check, and says so when nothing is running', async () => {
+  const idle = loadExtension({ telegram: true, respond: scriptedStore().respond });
+  await idle.telegram.pressStop();
+  assert.equal(telegramSaid(idle, /No scan is running/).length, 1);
+
+  let stop;
+  const ext = loadExtension({
+    telegram: true,
+    respond: scriptedStore().respond,
+    onBroadcast: onFirst(firstWaveSaved, () => { stop = ext.telegram.pressStop(); }),
+  });
+  await startScan(ext, skuList(3 * WAVE));
+  await ext.idle();
+  await stop;
+
+  assert.equal(ext.storage.scanState.userStopped, true);
+  assert.equal(ext.storage.scanState.currentIndex, WAVE);
+  assert.equal(telegramSaid(ext, /Scan stopped/).length, 1);
+  assert.equal(completions(ext).length, 0);
+});
+
+test('status from Telegram says when a full scan is building its product list', async () => {
+  const store = scriptedStore();
+  let status;
+  const ext = loadExtension({
+    telegram: true,
+    respond: (request, n) => {
+      if (n === 1) status = ext.telegram.showStatus();
+      return store.respond(request);
+    },
+  });
+
+  await ext.popup.toTab(fullScan);
+  await status;
+  await ext.idle();
+
+  assert.equal(telegramSaid(ext, /building its product list/).length, 1);
+  assert.deepEqual(telegramSaid(ext, /NO SCAN RUNNING/), []);
+});
+
+test('with two Home Depot tabs open, nothing starts while the other tab builds a product list', async () => {
+  const store = scriptedStore();
+  const attempts = [];
+  const ext = loadExtension({
+    telegram: true,
+    tabCount: 2,
+    storage: savedProductList(skuList(WAVE)),
+    respond: (request, n) => {
+      // The full scan runs in tab 2. On its first request, try to start scans
+      // from the popup, which is on tab 1, and from Telegram.
+      if (n === 1) {
+        attempts.push(
+          ext.popup.clickQuickRecheck(),
+          ext.popup.clickFullScan(),
+          ext.telegram.startPennyScan()
+        );
+      }
+      return store.respond(request);
+    },
+  });
+
+  const discovery = await ext.popup.toTab(fullScan, 2);
+  await until(() => completions(ext).length === 1, 'the full scan to finish');
+  await ext.idle();
+  await Promise.all(attempts);
+
+  assert.equal(refusals(ext).length, 2, 'both popup clicks were answered with "already running"');
+  assert.equal(telegramSaid(ext, /already running/).length, 1);
+  assert.equal(discovery.stopped, false);
+  assert.equal(
+    ext.requests.filter((request) => request.url === SITEMAP_URL).length, 1,
+    'only one product list was built'
+  );
+  assert.equal(ext.storage.scanState.scanType, 'sitemap');
+});

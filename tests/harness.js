@@ -219,14 +219,21 @@ function loadContentScript({ respond }) {
 //   storage               initial contents of chrome.storage.local
 //   onBroadcast(message)  called for each broadcast as it happens
 //   storeId               the store selected in the popup
+//   tabCount              how many Home Depot tabs are open (ids 1, 2, ...); each
+//                         runs its own content.js, and the popup is on tab 1
+//   telegram              true to connect a Telegram bot: its API calls are
+//                         recorded, and its long poll for commands never returns
 // The handle exposes:
-//   popup.toBackground(message), popup.toTab(message)   what the popup sends
+//   popup.toBackground(message), popup.toTab(message, tabId)   what a popup sends
 //   popup.clickFullScan(), popup.clickQuickRecheck(), popup.clickPennyScan(),
 //   popup.clickResume(), popup.pressStop()   run popup.js's real button handlers
 //   popup.open()          runs the check the popup makes first when it opens
 //   popup.status          every status line the popup would have shown, in order
 //   popup.errors          every error banner it would have shown
 //   popup.view.scanning   whether it is showing its scanning view
+//   telegram.startScan({ cached }), telegram.startPennyScan(), telegram.pressStop(),
+//   telegram.showStatus() run background.js's real handlers for those bot commands
+//   telegram.texts()      every message text the bot has sent or edited in
 //   idle()                resolves once the worker's scan loop has ended
 //   requests, broadcasts, waits
 //   storage               live contents of chrome.storage.local
@@ -235,15 +242,32 @@ function loadExtension({
   storage: initialStorage = {},
   onBroadcast = () => {},
   storeId = '2580',
+  tabCount = 1,
+  telegram = false,
 }) {
   const requests = [];
   const broadcasts = [];
   const backgroundErrors = [];
   const clock = createClock();
   const storage = createStorageArea(initialStorage);
-  const hdTab = { id: 1, windowId: 1, active: true, url: 'https://www.homedepot.com/' };
+  const hdTabs = Array.from({ length: tabCount }, (_, i) => ({
+    id: i + 1,
+    windowId: 1,
+    active: i === 0,
+    url: 'https://www.homedepot.com/',
+  }));
+  const contentListeners = new Map(); // tab id -> that tab's content.js listener
   let backgroundListener = null;
-  let contentListener = null;
+
+  const telegramChatId = 7;
+  const telegramCalls = [];
+  if (telegram) {
+    storage.data.telegramConfig = {
+      botToken: '123456789:TEST-TOKEN-TEST-TOKEN-TEST-TOKEN',
+      chatId: telegramChatId,
+    };
+    storage.data.telegramLastUpdateId = 1;
+  }
 
   const broadcast = (message) => {
     const seen = copy(message);
@@ -251,24 +275,31 @@ function loadExtension({
     onBroadcast(seen);
   };
   const toBackground = (message, sender = {}) => deliver(backgroundListener, message, sender);
-  const toTab = (message) => deliver(contentListener, message);
+  const toTab = (message, tabId = 1) => deliver(contentListeners.get(tabId), message);
 
   const backgroundSandbox = {
     console: silentConsole(backgroundErrors),
     URL,
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
-    fetch: async (url) => {
-      throw new Error(`background.js made an unexpected request to ${url}`);
+    fetch: async (url, init = {}) => {
+      const telegramMethod = /^https:\/\/api\.telegram\.org\/bot[^/]+\/(\w+)$/.exec(String(url));
+      if (!telegram || !telegramMethod) {
+        throw new Error(`background.js made an unexpected request to ${url}`);
+      }
+      // The long poll for commands never comes back: tests call the handlers.
+      if (telegramMethod[1] === 'getUpdates') return new Promise(() => {});
+      telegramCalls.push({ method: telegramMethod[1], body: init.body ? JSON.parse(init.body) : null });
+      return fakeResponse({ body: { ok: true, result: { message_id: telegramCalls.length } } });
     },
     chrome: {
       storage: { local: storage.api, onChanged: { addListener() {} } },
       alarms: { create() {}, clear() {}, onAlarm: { addListener() {} } },
       tabs: {
-        query: async () => [copy(hdTab)],
+        query: async () => copy(hdTabs),
         // background.js uses both the callback form and the promise form.
-        sendMessage: (_tabId, message, callback) => {
-          const answer = toTab(message);
+        sendMessage: (tabId, message, callback) => {
+          const answer = toTab(message, tabId);
           if (typeof callback !== 'function') return answer;
           answer.then(callback);
           return undefined;
@@ -293,17 +324,19 @@ function loadExtension({
   vm.runInContext(readSource('background.js'), backgroundSandbox, { filename: 'background.js' });
   if (!backgroundListener) throw new Error('background.js registered no message listener');
 
-  contentListener = runContentScript({
-    respond,
-    requests,
-    clock,
-    storage,
-    // From the tab, the worker handles the message and an open popup sees it too.
-    toRuntime: (message) => {
-      broadcast(message);
-      return toBackground(message, { tab: copy(hdTab) });
-    },
-  });
+  for (const tab of hdTabs) {
+    contentListeners.set(tab.id, runContentScript({
+      respond,
+      requests,
+      clock,
+      storage,
+      // From a tab, the worker handles the message and an open popup sees it too.
+      toRuntime: (message) => {
+        broadcast(message);
+        return toBackground(message, { tab: copy(tab) });
+      },
+    }));
+  }
 
   // popup.js's real handlers for the scan buttons, Resume and Stop, with the
   // popup's own plumbing (its page elements, status line and views) replaced by
@@ -331,8 +364,8 @@ function loadExtension({
       storage: { local: storage.api },
       runtime: { sendMessage: (message) => toBackground(message) },
       tabs: {
-        query: async () => [copy(hdTab)],
-        sendMessage: (_tabId, message) => toTab(message),
+        query: async () => copy(hdTabs),
+        sendMessage: (tabId, message) => toTab(message, tabId),
       },
     },
   });
@@ -348,6 +381,25 @@ function loadExtension({
     { filename: 'popup.js (scan buttons)' }
   );
   const inPopup = (call) => vm.runInContext(call, popupSandbox);
+
+  // background.js's real handlers for the bot's commands, called as its update
+  // dispatcher calls them: only once the bot's settings have been loaded.
+  const botCommand = (call) => vm.runInContext(
+    `telegramConfigReady.then(() => ${call})`, backgroundSandbox
+  );
+  const telegramHandle = {
+    startScan: ({ cached }) => botCommand(
+      `telegramHandleScanTrigger(${telegramChatId}, ${JSON.stringify(storeId)}, ${cached ? 'true' : 'false'})`
+    ),
+    startPennyScan: () => botCommand(
+      `telegramHandlePennyScanTrigger(${telegramChatId}, ${JSON.stringify(storeId)})`
+    ),
+    pressStop: () => botCommand(`telegramHandleStop(${telegramChatId})`),
+    showStatus: () => botCommand(`telegramHandleStatus(${telegramChatId}, null)`),
+    texts: () => telegramCalls
+      .filter((call) => call.body && typeof call.body.text === 'string')
+      .map((call) => call.body.text),
+  };
 
   // Resolves once the worker's scan loop has ended, whether the scan finished
   // or was stopped.
@@ -377,6 +429,7 @@ function loadExtension({
       errors: popupErrors,
       view: popupView,
     },
+    telegram: telegramHandle,
     idle,
     requests,
     broadcasts,
