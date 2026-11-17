@@ -87,6 +87,19 @@ Once connected, send `/menu` to your bot for buttons to start scans, run a penny
 - **Lots of 403s / "rate limited"** — Home Depot is throttling you. Stop, wait a while (15 min to a few hours), and try again. Check your computer's clock is set correctly, too — a wrong clock can cause API errors.
 - **Scan seems stuck at "waiting for tab"** — make sure a homedepot.com tab is still open; the background scanner needs it to make requests.
 - **Nothing found** — clearance changes daily and varies by store. Try again later or scan a different store.
+- **Every scan finds nothing, and Test API Connection says "Non-JSON response"** — your copy is too old. Versions from before mid-November 2026 can't read the format Home Depot's API now answers in. Update to the latest version (see *To update later* under Install), then reload any open homedepot.com tab.
+
+---
+
+## Development
+
+The tests need only Node.js (written and run on Node 22) and no install step. From this folder:
+
+```
+node --test
+```
+
+They load the real extension files against a fake browser and a scripted Home Depot, so they send no requests anywhere.
 
 ---
 

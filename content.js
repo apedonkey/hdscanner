@@ -324,13 +324,25 @@ let scanStopped = false;
 // (rate-limited / HTTP / timeout) rather than genuinely being empty.
 let rateLimitedCategoryCount = 0;
 
+// >>> shared-api-helpers
+// This block is duplicated verbatim in content.js and popup.js, which cannot
+// import from each other. tests/api-compat.test.js fails if the copies differ.
+
 // True for application/json and any +json structured-syntax suffix type
-// (RFC 6839). HD's gateway now answers with the GraphQL-over-HTTP media type,
+// (RFC 6839). HD's gateway answers with the GraphQL-over-HTTP media type,
 // application/graphql-response+json, so matching application/json alone
 // rejected every valid response. An HTML block page still fails the check.
 function isJsonContentType(contentType) {
   return /^application\/(?:[\w.-]+\+)?json\s*(?:;|$)/i.test((contentType || '').trim());
 }
+
+// True when a parsed GraphQL body has at least one non-null field under `data`.
+// HD's throttle body, {"data":{"Generic Errors API":null},"error":[...]}, has none.
+function hasUsableData(body) {
+  const data = body && typeof body === 'object' ? body.data : null;
+  return !!data && typeof data === 'object' && Object.values(data).some(value => value != null);
+}
+// <<< shared-api-helpers
 
 // Low-level GraphQL POST shared by every caller. Adds a hard request timeout,
 // unified 403/429 detection with exponential backoff, and a shared cooldown so
@@ -367,11 +379,34 @@ async function graphqlFetch(operation, variables, query, { timeoutMs = 20000, re
     clearTimeout(timer);
   }
 
-  // Akamai (403), rate limiting (429) and HD's gateway throttle (206 with a
-  // "Generic Errors API" body and no data): set the shared cooldown and back off.
-  // 206 is a 2xx, so without this it fell through as a successful response and
-  // every SKU in the chunk was recorded as an error instead of being retried.
-  if (response.status === 403 || response.status === 429 || response.status === 206) {
+  // Read the body before judging the status: only its contents tell HD's 206
+  // throttle apart from a 206 that carries a usable partial result.
+  let body = null;
+  let bodyProblem = null;
+  if (response.ok) {
+    const contentType = response.headers.get('content-type');
+    if (!isJsonContentType(contentType)) {
+      bodyProblem = 'Non-JSON response';
+      console.warn(`[HD Scanner] Non-JSON response: ${contentType}`);
+    } else {
+      try {
+        body = await response.json();
+      } catch (e) {
+        bodyProblem = 'JSON parse failed';
+        console.warn('[HD Scanner] JSON parse failed:', e.message);
+      }
+    }
+  }
+
+  // Akamai (403), rate limiting (429) and HD's gateway throttle: set the shared
+  // cooldown and back off. The throttle is a 206 with a "Generic Errors API" body
+  // and no data. 206 is a 2xx, so without this it fell through as a successful
+  // response and every SKU in the chunk was recorded as an error instead of being
+  // retried. A 206 that does carry data is returned below like any other
+  // response: data is never thrown away because of the status code.
+  const blocked = response.status === 403 || response.status === 429;
+  const throttled = response.status === 206 && !hasUsableData(body);
+  if (blocked || throttled) {
     rateLimitHits++;
     if (retryCount < maxRetries) {
       // Exponential backoff: 10s, 30s, 90s + random jitter
@@ -389,19 +424,10 @@ async function graphqlFetch(operation, variables, query, { timeoutMs = 20000, re
     return { error: 'http_error', status: response.status, errors: [{ message: `HTTP ${response.status}` }] };
   }
 
-  // Check if response is JSON
-  const contentType = response.headers.get('content-type');
-  if (!isJsonContentType(contentType)) {
-    console.warn(`[HD Scanner] Non-JSON response: ${contentType}`);
-    return { error: 'invalid_response', errors: [{ message: 'Non-JSON response' }] };
+  if (bodyProblem) {
+    return { error: 'invalid_response', errors: [{ message: bodyProblem }] };
   }
-
-  try {
-    return await response.json();
-  } catch (e) {
-    console.warn('[HD Scanner] JSON parse failed:', e.message);
-    return { error: 'invalid_response', errors: [{ message: 'JSON parse failed' }] };
-  }
+  return body;
 }
 
 async function apiCall(operation, variables, query) {
