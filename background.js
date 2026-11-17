@@ -1756,9 +1756,26 @@ async function telegramHandleScanTrigger(chatId, storeId, useCached) {
     storeName
   };
 
+  // Getting the product list takes seconds from the cache, but many minutes
+  // when a full scan has to build it. That long case runs on its own from here,
+  // so the bot keeps answering commands meanwhile: Stop ends it and status
+  // reports it. Waiting for it here used to leave every command unanswered
+  // until the list was built.
+  const work = telegramLoadSkusThenScan(chatId, tabId, storeId, storeName, useCached, progressMessageId);
+  if (useCached) {
+    await work;
+  } else {
+    work.catch((e) => console.error('[Telegram] Full scan failed:', e));
+  }
+}
+
+// The second half of a scan started from Telegram: get the product list, from
+// the cache or by having the tab build it, then start the price check.
+async function telegramLoadSkusThenScan(chatId, tabId, storeId, storeName, useCached, progressMessageId) {
   // Discover or load SKUs
   let skus = [];
   let discoveryError = null;
+  let discoveryStopped = false;
   try {
     if (useCached) {
       const cacheResp = await new Promise((resolve) => {
@@ -1782,9 +1799,21 @@ async function telegramHandleScanTrigger(chatId, storeId, useCached) {
       skus = (discoverResp && discoverResp.skus) || [];
       // The tab builds one product list at a time and refuses a second request.
       if (discoverResp && discoverResp.busy) discoveryError = 'a scan is already running';
+      // Stopped while the list was being built: do not go on to check prices.
+      if (discoverResp && discoverResp.stopped) discoveryStopped = true;
     }
   } catch (e) {
     discoveryError = (e && e.message) || 'discovery failed';
+  }
+  if (discoveryStopped) {
+    telegramProgressCtx = null;
+    await telegramSendOrEdit(
+      chatId,
+      progressMessageId,
+      '⛔ <b>SCAN STOPPED</b>\nStopped while the product list was being built. The products found so far are saved.',
+      { inline_keyboard: [[{ text: '« Menu', callback_data: 'menu:main' }]] }
+    );
+    return;
   }
   if (discoveryError || skus.length === 0) {
     telegramProgressCtx = null;

@@ -740,3 +740,73 @@ test('with two Home Depot tabs open, nothing starts while the other tab builds a
   );
   assert.equal(ext.storage.scanState.scanType, 'sitemap');
 });
+
+// ---------------------------------------------------------------------------
+// The bot while its own full scan builds the product list
+//
+// The bot reads its commands one at a time. It used to wait for a full scan's
+// whole product-list stage before reading the next one, so for all that time
+// it answered nothing, Stop included. These tests send commands through the
+// bot's real polling loop.
+// ---------------------------------------------------------------------------
+
+test('a full scan started from Telegram builds the product list and checks every price', async () => {
+  const store = scriptedStore();
+  const ext = loadExtension({ telegram: true, respond: store.respond });
+
+  ext.telegram.tap(`scan:${STORE}`);
+  await until(() => completions(ext).length === 1, 'the full scan to finish');
+  await ext.idle();
+
+  assert.equal(ext.storage.scanState.scanType, 'telegram_full');
+  assert.equal(ext.storage.scanState.checked, store.productCount);
+  assert.equal(ext.storage.scanState.errors, 0);
+});
+
+test('the bot answers status while its own full scan builds the product list', async () => {
+  const store = scriptedStore();
+  const ext = loadExtension({
+    telegram: true,
+    respond: (request, n) => {
+      // On the first product-list request, ask the bot for its status.
+      if (n === 1) ext.telegram.say('/status');
+      return store.respond(request);
+    },
+  });
+
+  ext.telegram.tap(`scan:${STORE}`);
+  await until(() => completions(ext).length === 1, 'the full scan to finish');
+  await ext.idle();
+
+  assert.equal(
+    telegramSaid(ext, /building its product list/).length, 1,
+    'status was answered during the product-list stage'
+  );
+  assert.equal(ext.storage.scanState.scanType, 'telegram_full');
+  assert.equal(ext.storage.scanState.checked, store.productCount);
+});
+
+test('Stop from Telegram ends the bot\'s own full scan while it builds the product list', async () => {
+  const store = scriptedStore();
+  const ext = loadExtension({
+    telegram: true,
+    respond: (request) => {
+      // Send Stop as the first department's product list is requested.
+      if (isProductListRequest(request)) sendStopOnce();
+      return store.respond(request);
+    },
+  });
+  const sendStopOnce = onFirst(() => true, () => ext.telegram.say('/stop'));
+
+  ext.telegram.tap(`scan:${STORE}`);
+  await until(() => telegramSaid(ext, /SCAN STOPPED/).length === 1, 'the bot to report the stopped scan');
+  await ext.idle();
+
+  assert.equal(telegramSaid(ext, /Scan stopped/).length, 1, 'the Stop command was answered');
+  assert.equal(ext.storage.scanState, undefined, 'no price check was started');
+  assert.equal(completions(ext).length, 0);
+  assert.ok(
+    ext.storage.skuInventoryMultiStore[STORE].skus.length > 0,
+    'the products found so far are saved'
+  );
+});

@@ -222,7 +222,8 @@ function loadContentScript({ respond }) {
 //   tabCount              how many Home Depot tabs are open (ids 1, 2, ...); each
 //                         runs its own content.js, and the popup is on tab 1
 //   telegram              true to connect a Telegram bot: its API calls are
-//                         recorded, and its long poll for commands never returns
+//                         recorded, and its long poll for commands is answered
+//                         by telegram.tap() and telegram.say()
 // The handle exposes:
 //   popup.toBackground(message), popup.toTab(message, tabId)   what a popup sends
 //   popup.clickFullScan(), popup.clickQuickRecheck(), popup.clickPennyScan(),
@@ -233,6 +234,8 @@ function loadContentScript({ respond }) {
 //   popup.view.scanning   whether it is showing its scanning view
 //   telegram.startScan({ cached }), telegram.startPennyScan(), telegram.pressStop(),
 //   telegram.showStatus() run background.js's real handlers for those bot commands
+//   telegram.tap(data), telegram.say(text)   send the bot a command through its
+//                         real long poll: a button tap or a text message
 //   telegram.texts()      every message text the bot has sent or edited in
 //   idle()                resolves once the worker's scan loop has ended
 //   requests, broadcasts, waits
@@ -261,6 +264,19 @@ function loadExtension({
 
   const telegramChatId = 7;
   const telegramCalls = [];
+  const telegramUpdates = []; // commands waiting for the bot's next long poll
+  const telegramPolls = []; // long polls waiting for a command
+  let telegramUpdateId = 1; // the cursor seeded below
+  const deliverTelegramUpdates = () => {
+    if (telegramPolls.length === 0 || telegramUpdates.length === 0) return;
+    const answerPoll = telegramPolls.shift();
+    answerPoll(fakeResponse({ body: { ok: true, result: telegramUpdates.splice(0) } }));
+  };
+  const receiveTelegramUpdate = (update) => {
+    telegramUpdateId += 1;
+    telegramUpdates.push({ update_id: telegramUpdateId, ...update });
+    deliverTelegramUpdates();
+  };
   if (telegram) {
     storage.data.telegramConfig = {
       botToken: '123456789:TEST-TOKEN-TEST-TOKEN-TEST-TOKEN',
@@ -287,8 +303,14 @@ function loadExtension({
       if (!telegram || !telegramMethod) {
         throw new Error(`background.js made an unexpected request to ${url}`);
       }
-      // The long poll for commands never comes back: tests call the handlers.
-      if (telegramMethod[1] === 'getUpdates') return new Promise(() => {});
+      // The bot's long poll for commands: answered when a test sends one with
+      // telegram.tap() or telegram.say(), and left hanging until then.
+      if (telegramMethod[1] === 'getUpdates') {
+        return new Promise((resolve) => {
+          telegramPolls.push(resolve);
+          deliverTelegramUpdates();
+        });
+      }
       telegramCalls.push({ method: telegramMethod[1], body: init.body ? JSON.parse(init.body) : null });
       return fakeResponse({ body: { ok: true, result: { message_id: telegramCalls.length } } });
     },
@@ -396,6 +418,16 @@ function loadExtension({
     ),
     pressStop: () => botCommand(`telegramHandleStop(${telegramChatId})`),
     showStatus: () => botCommand(`telegramHandleStatus(${telegramChatId}, null)`),
+    // Send the bot a command through its real long poll, as Telegram does: a tap
+    // on an inline button ('scan:2580', 'menu:stop'), or a text ('/status').
+    tap: (data) => receiveTelegramUpdate({
+      callback_query: {
+        id: `tap-${telegramUpdateId}`,
+        data,
+        message: { chat: { id: telegramChatId }, message_id: 1 },
+      },
+    }),
+    say: (text) => receiveTelegramUpdate({ message: { chat: { id: telegramChatId }, text } }),
     texts: () => telegramCalls
       .filter((call) => call.body && typeof call.body.text === 'string')
       .map((call) => call.body.text),
