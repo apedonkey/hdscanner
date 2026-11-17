@@ -12,12 +12,25 @@ const API_URL = "https://apionline.homedepot.com/federation-gateway/graphql";
 // should evaluate to true for this SKU whenever the tag is still live at the store.
 const YELLOW_TAG_CANARY = '206005261';
 
+// >>> shared-api-helpers
+// This block is duplicated verbatim in content.js and popup.js, which cannot
+// import from each other. tests/api-compat.test.js fails if the copies differ.
+
 // True for application/json and any +json structured-syntax suffix type
-// (RFC 6839), e.g. the application/graphql-response+json HD's gateway now sends.
-// Keep in sync with isJsonContentType in content.js.
+// (RFC 6839). HD's gateway answers with the GraphQL-over-HTTP media type,
+// application/graphql-response+json, so matching application/json alone
+// rejected every valid response. An HTML block page still fails the check.
 function isJsonContentType(contentType) {
   return /^application\/(?:[\w.-]+\+)?json\s*(?:;|$)/i.test((contentType || '').trim());
 }
+
+// True when a parsed GraphQL body has at least one non-null field under `data`.
+// HD's throttle body, {"data":{"Generic Errors API":null},"error":[...]}, has none.
+function hasUsableData(body) {
+  const data = body && typeof body === 'object' ? body.data : null;
+  return !!data && typeof data === 'object' && Object.values(data).some(value => value != null);
+}
+// <<< shared-api-helpers
 
 const PRODUCT_QUERY = `
 query productClientOnlyProduct($itemId: String!, $storeId: String!) {
@@ -284,6 +297,35 @@ function showConnectionResult(className, html) {
   result.style.display = 'block';
 }
 
+// >>> api-test-verdict
+// Decides what Test API Connection reports. Pure (no DOM, no network), so
+// tests/api-compat.test.js can check every branch.
+//   status: HTTP status of the test request.
+//   body:   its parsed JSON body, or null when it was not readable JSON.
+function classifyApiTestResponse(status, body) {
+  if (status === 403) return 'blocked';
+  if (status === 429) return 'tooManyRequests';
+  if (status < 200 || status > 299) return 'httpError';
+  if (body?.data?.product) return 'working';
+
+  // No data at all, plus either HD's throttle status (206) or its refusal
+  // shape: a top-level `error`, where GraphQL itself uses `errors`. content.js
+  // applies the same "206 without data" rule to scans.
+  const refusalShape = !!body && typeof body === 'object' && body.error != null && body.errors == null;
+  if (!hasUsableData(body) && (status === 206 || refusalShape)) return 'refused';
+
+  if (body == null || typeof body !== 'object') return 'nonJson';
+
+  const errors = Array.isArray(body.errors) ? body.errors : [];
+  if (errors.length > 0) {
+    // A missing product is an answer, not an API failure.
+    const message = String(errors[0]?.message ?? '');
+    return /not found|does not exist/i.test(message) ? 'testItemGone' : 'graphqlErrors';
+  }
+  return 'reachable';
+}
+// <<< api-test-verdict
+
 // Test API connection / rate limit status
 async function testApiConnection() {
   const btn = $('testConnectionBtn');
@@ -292,7 +334,8 @@ async function testApiConnection() {
   showConnectionResult('banner info', 'Contacting Home Depot’s API…');
 
   const storeId = $('storeId').value;
-  // Use a common SKU (a basic item that should always exist)
+  // Built-in test product. Home Depot retires products, so a "not found" answer
+  // is reported as exactly that (see classifyApiTestResponse), not as an API failure.
   const testSku = '100375745';
   const start = Date.now();
 
@@ -315,29 +358,30 @@ async function testApiConnection() {
     const elapsed = Date.now() - start;
     const meta = `<span style="font-size:11px;">${elapsed}ms &middot; Store #${escapeHtml(storeId)}</span>`;
 
-    if (response.status === 403) {
-      showConnectionResult('banner warn', `<strong>&#9888; Rate limited (403)</strong><br>Home Depot is blocking requests. Wait a few minutes before scanning again.<br>${meta}`);
-    } else if (response.status === 429) {
-      showConnectionResult('banner warn', `<strong>&#9888; Too many requests (429)</strong><br>You've hit the request limit. Wait 5-10 minutes.<br>${meta}`);
-    } else if (response.status === 206) {
-      showConnectionResult('banner warn', `<strong>&#9888; Throttled (206)</strong><br>Home Depot is answering with empty "Generic Errors" responses. Wait a while (15 min to a few hours) before scanning again.<br>${meta}`);
-    } else if (response.ok) {
-      const contentType = response.headers.get('content-type');
-      if (isJsonContentType(contentType)) {
-        const data = await response.json();
-        if (data?.data?.product) {
-          showConnectionResult('banner ok', `<strong>&#10003; API is working</strong><br>Got a valid response. You're good to scan.<br>${meta}`);
-        } else if (data?.errors) {
-          showConnectionResult('banner warn', `<strong>&#9888; API returned errors</strong><br>${escapeHtml(data.errors[0]?.message || 'Unknown error')}<br>${meta}`);
-        } else {
-          showConnectionResult('banner ok', `<strong>&#10003; API responding</strong><br>Got HTTP 200 but no product data. API is reachable.<br>${meta}`);
-        }
-      } else {
-        showConnectionResult('banner warn', `<strong>&#9888; Non-JSON response</strong><br>Got HTTP ${response.status} but the response isn't JSON. Possible CAPTCHA or redirect.<br>${meta}`);
+    let body = null;
+    if (response.ok && isJsonContentType(response.headers.get('content-type'))) {
+      try {
+        body = await response.json();
+      } catch (_) {
+        body = null; // unreadable JSON is reported as a non-JSON response
       }
-    } else {
-      showConnectionResult('banner error', `<strong>&#10007; HTTP ${response.status}</strong><br>Unexpected status code. The API may be down or blocking you.<br>${meta}`);
     }
+
+    const status = response.status;
+    const firstError = escapeHtml(body?.errors?.[0]?.message || 'Unknown error');
+    const banners = {
+      working: ['banner ok', `<strong>&#10003; API is working</strong><br>Got a valid response. You're good to scan.`],
+      testItemGone: ['banner ok', `<strong>&#10003; API responding</strong><br>Home Depot answered normally, but the built-in test product no longer exists (${firstError}), so this check can't confirm product data.`],
+      reachable: ['banner ok', `<strong>&#10003; API responding</strong><br>Got HTTP ${status} but no product data. API is reachable.`],
+      refused: ['banner warn', `<strong>&#9888; Home Depot is refusing requests (${status})</strong><br>It answered without any data. First check that your computer's clock is correct. If it is, you are being throttled: wait a while (15 min to a few hours) before scanning again.`],
+      blocked: ['banner warn', `<strong>&#9888; Rate limited (403)</strong><br>Home Depot is blocking requests. Wait a few minutes before scanning again.`],
+      tooManyRequests: ['banner warn', `<strong>&#9888; Too many requests (429)</strong><br>You've hit the request limit. Wait 5-10 minutes.`],
+      nonJson: ['banner warn', `<strong>&#9888; Non-JSON response</strong><br>Got HTTP ${status} but the response isn't JSON. Possible CAPTCHA or redirect.`],
+      graphqlErrors: ['banner warn', `<strong>&#9888; API returned errors</strong><br>${firstError}`],
+      httpError: ['banner error', `<strong>&#10007; HTTP ${status}</strong><br>Unexpected status code. The API may be down or blocking you.`]
+    };
+    const [className, html] = banners[classifyApiTestResponse(status, body)];
+    showConnectionResult(className, `${html}<br>${meta}`);
   } catch (e) {
     showConnectionResult('banner error', `<strong>&#10007; Connection failed</strong><br>${escapeHtml(e.message)}<br><span style="font-size:11px;">Make sure a homedepot.com tab is open.</span>`);
   }

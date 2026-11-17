@@ -127,4 +127,75 @@ function sliceBetweenMarkers(source, beginMarker, endMarker, label) {
   return lines.slice(begin + 1, end).join('\n');
 }
 
-module.exports = { readSource, loadContentScript, sliceBetweenMarkers };
+// The helper block that content.js and popup.js must carry identical copies of.
+function sharedHelperBlock(fileName) {
+  return sliceBetweenMarkers(
+    readSource(fileName), '>>> shared-api-helpers', '<<< shared-api-helpers', fileName
+  );
+}
+
+// Source of popup.js's pure helpers: the shared block plus the verdict function.
+function popupPureSource() {
+  const verdictBlock = sliceBetweenMarkers(
+    readSource('popup.js'), '>>> api-test-verdict', '<<< api-test-verdict', 'popup.js'
+  );
+  return `${sharedHelperBlock('popup.js')}\n${verdictBlock}`;
+}
+
+// popup.js's pure helpers, evaluated on their own (popup.js as a whole needs a DOM).
+function loadPopupHelpers() {
+  const context = vm.createContext({});
+  vm.runInContext(popupPureSource(), context, { filename: 'popup.js (pure helpers)' });
+  return vm.runInContext('({ isJsonContentType, hasUsableData, classifyApiTestResponse })', context);
+}
+
+// Source of one top-level function: from its declaration line to the first
+// line after it that is a lone "}" in column 0.
+function topLevelFunctionSource(source, name, label) {
+  const lines = source.split(/\r?\n/);
+  const start = lines.findIndex(
+    (line) => line.startsWith(`function ${name}(`) || line.startsWith(`async function ${name}(`)
+  );
+  const end = lines.findIndex((line, i) => i > start && line === '}');
+  if (start < 0 || end < 0) throw new Error(`${label}: function ${name} not found`);
+  return lines.slice(start, end + 1).join('\n');
+}
+
+// Run popup.js's real testApiConnection() once and return the banner it ends
+// on: { className, html }. respond() returns { status, contentType, body } for
+// the request, or an Error to make fetch() itself fail.
+async function runPopupApiTest(respond) {
+  const source = readSource('popup.js');
+  const banners = [];
+  const context = vm.createContext({
+    API_URL: 'https://example.invalid/graphql',
+    PRODUCT_QUERY: 'query { test }',
+    $: () => ({ value: '2580', disabled: false, textContent: '' }),
+    showConnectionResult: (className, html) => { banners.push({ className, html }); },
+    fetch: async () => {
+      const answer = respond();
+      if (answer instanceof Error) throw answer;
+      return fakeResponse(answer);
+    },
+  });
+  vm.runInContext(
+    [
+      popupPureSource(),
+      topLevelFunctionSource(source, 'escapeHtml', 'popup.js'),
+      topLevelFunctionSource(source, 'testApiConnection', 'popup.js'),
+    ].join('\n'),
+    context,
+    { filename: 'popup.js (testApiConnection)' }
+  );
+  await vm.runInContext('testApiConnection()', context);
+  return banners[banners.length - 1];
+}
+
+module.exports = {
+  readSource,
+  loadContentScript,
+  sliceBetweenMarkers,
+  sharedHelperBlock,
+  loadPopupHelpers,
+  runPopupApiTest,
+};
