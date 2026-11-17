@@ -1001,22 +1001,25 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   if (request.action === 'startBackgroundScan') {
     // One scan at a time. A second start used to replace the running scan and
-    // throw away its progress.
-    if (scanState.running) {
-      console.log('[Background] Not starting a scan: one is already running');
-      sendResponse({ started: false, reason: 'already_running' });
-      return true;
-    }
-    const isPenny = (request.scanType || '').includes('penny');
-    console.log(`[Background] Starting ${isPenny ? 'penny ' : ''}scan with`, request.skus.length, 'SKUs');
+    // throw away its progress. Wait for the startup check first, so that a scan
+    // this worker is about to pick back up counts as running.
+    startupResumeCheck.then(() => {
+      if (scanState.running) {
+        console.log('[Background] Not starting a scan: one is already running');
+        sendResponse({ started: false, reason: 'already_running' });
+        return;
+      }
+      const isPenny = (request.scanType || '').includes('penny');
+      console.log(`[Background] Starting ${isPenny ? 'penny ' : ''}scan with`, request.skus.length, 'SKUs');
 
-    const storeName = escapeTg(STORE_NAMES[request.storeId] || request.storeId);
-    const startLabel = isPenny ? '🪙 <b>PENNY SCAN STARTED</b>' : '🔍 <b>SCAN STARTED</b>';
-    sendToDealsChannel(`${startLabel}\n📍 Store: ${storeName} (#${escapeTg(request.storeId)})\n📊 Checking ${request.skus.length.toLocaleString()} SKUs...`)
-      .then(r => console.log('[Background] Telegram start notification:', r.success ? 'sent' : r.error));
+      const storeName = escapeTg(STORE_NAMES[request.storeId] || request.storeId);
+      const startLabel = isPenny ? '🪙 <b>PENNY SCAN STARTED</b>' : '🔍 <b>SCAN STARTED</b>';
+      sendToDealsChannel(`${startLabel}\n📍 Store: ${storeName} (#${escapeTg(request.storeId)})\n📊 Checking ${request.skus.length.toLocaleString()} SKUs...`)
+        .then(r => console.log('[Background] Telegram start notification:', r.success ? 'sent' : r.error));
 
-    startScan(request.storeId, request.skus, request.scanType);
-    sendResponse({ started: true });
+      startScan(request.storeId, request.skus, request.scanType);
+      sendResponse({ started: true });
+    });
     return true;
   }
 
@@ -1091,7 +1094,9 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'getScanState') {
-    sendResponse({
+    // After the startup check, so that a scan this worker is about to pick back
+    // up is reported as running.
+    startupResumeCheck.then(() => sendResponse({
       running: scanState.running,
       checked: scanState.checked,
       total: scanState.total || 0,
@@ -1099,7 +1104,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       errors: scanState.errors,
       clearanceItems: scanState.clearanceItems,
       scanType: scanState.scanType || null
-    });
+    }));
     return true;
   }
 
@@ -1737,6 +1742,8 @@ async function telegramHandleScanTrigger(chatId, storeId, useCached) {
         });
       });
       skus = (discoverResp && discoverResp.skus) || [];
+      // The tab builds one product list at a time and refuses a second request.
+      if (discoverResp && discoverResp.busy) discoveryError = 'a scan is already running';
     }
   } catch (e) {
     discoveryError = (e && e.message) || 'discovery failed';

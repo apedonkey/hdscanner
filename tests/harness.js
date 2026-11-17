@@ -218,14 +218,24 @@ function loadContentScript({ respond }) {
 //   respond(request, n)   answer for the tab's n-th fetch, as in loadContentScript
 //   storage               initial contents of chrome.storage.local
 //   onBroadcast(message)  called for each broadcast as it happens
+//   storeId               the store selected in the popup
 // The handle exposes:
 //   popup.toBackground(message), popup.toTab(message)   what the popup sends
-//   popup.pressStop()     runs popup.js's real stopScan()
+//   popup.clickFullScan(), popup.clickQuickRecheck(), popup.clickPennyScan(),
+//   popup.clickResume(), popup.pressStop()   run popup.js's real button handlers
+//   popup.open()          runs the check the popup makes first when it opens
 //   popup.status          every status line the popup would have shown, in order
+//   popup.errors          every error banner it would have shown
+//   popup.view.scanning   whether it is showing its scanning view
 //   idle()                resolves once the worker's scan loop has ended
 //   requests, broadcasts, waits
 //   storage               live contents of chrome.storage.local
-function loadExtension({ respond, storage: initialStorage = {}, onBroadcast = () => {} }) {
+function loadExtension({
+  respond,
+  storage: initialStorage = {},
+  onBroadcast = () => {},
+  storeId = '2580',
+}) {
   const requests = [];
   const broadcasts = [];
   const backgroundErrors = [];
@@ -295,21 +305,49 @@ function loadExtension({ respond, storage: initialStorage = {}, onBroadcast = ()
     },
   });
 
-  // popup.js's real Stop handler, with the popup's own plumbing replaced.
+  // popup.js's real handlers for the scan buttons, Resume and Stop, with the
+  // popup's own plumbing (its page elements, status line and views) replaced by
+  // recorders.
   const popupStatus = [];
+  const popupErrors = [];
+  const popupView = { scanning: false };
+  const popupElements = { storeId: { value: storeId, style: {} } };
+  const popupSource = readSource('popup.js');
   const popupSandbox = vm.createContext({
+    console: silentConsole([]),
+    setTimeout: clock.setTimeout,
+    $: (id) => popupElements[id] || (popupElements[id] = { value: '', style: {} }),
     setStatus: (text) => { popupStatus.push(text); },
-    setScanningUI() {},
+    showError: (text) => { popupErrors.push(text); },
+    hideError() {},
+    setScanningUI: (isScanning) => { popupView.scanning = isScanning; },
+    setProgress() {},
+    setOverflowStatus() {},
+    formatCacheAge: () => '',
     checkForInterruptedScan() {},
+    checkConnection: async () => true,
     sendToContentScript: (message) => toTab(message),
-    chrome: { runtime: { sendMessage: (message) => toBackground(message) } },
+    chrome: {
+      storage: { local: storage.api },
+      runtime: { sendMessage: (message) => toBackground(message) },
+      tabs: {
+        query: async () => [copy(hdTab)],
+        sendMessage: (_tabId, message) => toTab(message),
+      },
+    },
   });
   vm.runInContext(
-    topLevelFunctionSource(readSource('popup.js'), 'stopScan', 'popup.js'),
+    [
+      // State the handlers assign to; popup.js declares these at its top.
+      'var currentScanType = null, clearanceItems = [], stats = {};',
+      sliceBetweenMarkers(popupSource, '>>> one-scan-at-a-time', '<<< one-scan-at-a-time', 'popup.js'),
+      ...['startSitemapScan', 'startCheckSkusOnly', 'startPennyScan', 'stopScan']
+        .map((name) => topLevelFunctionSource(popupSource, name, 'popup.js')),
+    ].join('\n'),
     popupSandbox,
-    { filename: 'popup.js (stopScan)' }
+    { filename: 'popup.js (scan buttons)' }
   );
-  const pressStop = () => { vm.runInContext('stopScan()', popupSandbox); };
+  const inPopup = (call) => vm.runInContext(call, popupSandbox);
 
   // Resolves once the worker's scan loop has ended, whether the scan finished
   // or was stopped.
@@ -326,7 +364,19 @@ function loadExtension({ respond, storage: initialStorage = {}, onBroadcast = ()
   }
 
   return {
-    popup: { toBackground, toTab, pressStop, status: popupStatus },
+    popup: {
+      toBackground,
+      toTab,
+      clickFullScan: () => inPopup('startSitemapScan()'),
+      clickQuickRecheck: () => inPopup('startCheckSkusOnly()'),
+      clickPennyScan: () => inPopup('startPennyScan()'),
+      clickResume: () => inPopup('resumeInterruptedScan()'),
+      pressStop: () => { inPopup('stopScan()'); },
+      open: () => inPopup('showRunningScanEarly()'),
+      status: popupStatus,
+      errors: popupErrors,
+      view: popupView,
+    },
     idle,
     requests,
     broadcasts,

@@ -268,6 +268,53 @@ test('a full scan whose product list is ready while another scan runs does not r
   assert.equal(completions(ext).length, 1);
 });
 
+// What chrome.storage.local holds when the worker was shut down in the middle
+// of a scan. The worker picks such a scan back up as soon as it starts again.
+function interruptedScanStorage(skus) {
+  return {
+    scanSkus: skus,
+    scanState: {
+      running: true,
+      storeId: STORE,
+      total: skus.length,
+      currentIndex: WAVE,
+      checked: WAVE,
+      errors: 0,
+      startTime: 1_700_000_000_000,
+      scanType: 'skuCheckOnly',
+      userStopped: false,
+      totalClearanceSeen: 0,
+      totalFilteredOut: 0,
+    },
+    clearanceItems: [],
+  };
+}
+
+test('a scan start that wakes the worker is refused when the worker has a scan to pick back up', async () => {
+  const skus = skuList(3 * WAVE);
+  const ext = loadExtension({ storage: interruptedScanStorage(skus), respond: scriptedStore().respond });
+
+  // Arrives before the worker has looked for a scan to pick back up.
+  const start = await startScan(ext, skuList(WAVE), 'penny');
+  await ext.idle();
+
+  assert.deepEqual(start, { started: false, reason: 'already_running' });
+  assert.equal(ext.storage.scanState.scanType, 'skuCheckOnly', 'the interrupted scan carried on');
+  assert.equal(ext.storage.scanState.checked, 3 * WAVE);
+  assert.equal(completions(ext).length, 1);
+});
+
+test('a worker that has just woken reports the scan it is about to pick back up as running', async () => {
+  const skus = skuList(3 * WAVE);
+  const ext = loadExtension({ storage: interruptedScanStorage(skus), respond: scriptedStore().respond });
+
+  const state = await ext.popup.toBackground({ action: 'getScanState' });
+  await ext.idle();
+
+  assert.equal(state.running, true);
+  assert.equal(state.total, 3 * WAVE);
+});
+
 // ---------------------------------------------------------------------------
 // A full scan from start to finish, and Stop at each of its stages
 // ---------------------------------------------------------------------------
@@ -333,4 +380,197 @@ test('Stop during the re-check of an overstuffed department ends it after the so
   const sortsUsed = new Set(ext.requests.filter(isRecheck).map(sortOf));
   assert.equal(sortsUsed.size, 1, 'only the sort order in flight finished; the other three were not started');
   assert.equal(completions(ext).length, 0, 'the price check it had started was stopped too');
+});
+
+// ---------------------------------------------------------------------------
+// The popup's scan buttons
+//
+// The popup needs a moment after opening before it shows a running scan, and
+// its buttons are live in that moment, so each button asks what is running at
+// the moment it is clicked.
+// ---------------------------------------------------------------------------
+
+const refusals = (ext) => ext.popup.status.filter((line) => /^A scan is already running/.test(line));
+
+// chrome.storage.local with a saved product list, which Quick Recheck and Penny
+// Scan need.
+const savedProductList = (skus) => ({
+  skuInventoryMultiStore: { [STORE]: { skus, lastUpdated: 1_700_000_000_000 } },
+});
+
+// Waits, in turns of the event loop, until `condition()` is true.
+async function until(condition, what) {
+  const giveUpAt = Date.now() + 10000;
+  while (!condition()) {
+    if (Date.now() > giveUpAt) throw new Error(`gave up waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+}
+
+// Click Scan for Clearance and wait for the whole scan to finish.
+async function runFullScanFromPopup(ext) {
+  await ext.popup.clickFullScan();
+  await until(() => completions(ext).length === 1, 'the full scan to finish');
+  await ext.idle();
+}
+
+test('Quick Recheck and Penny Scan start normally when nothing is running', async () => {
+  const skus = skuList(2 * WAVE);
+  for (const [click, scanType] of [['clickQuickRecheck', 'skuCheckOnly'], ['clickPennyScan', 'penny']]) {
+    const ext = loadExtension({ storage: savedProductList(skus), respond: scriptedStore().respond });
+
+    await ext.popup[click]();
+    await ext.idle();
+
+    assert.equal(completions(ext).length, 1, `${click} ran a scan`);
+    assert.equal(ext.storage.scanState.scanType, scanType);
+    assert.equal(ext.storage.scanState.checked, 2 * WAVE);
+    assert.deepEqual(refusals(ext), []);
+    assert.deepEqual(ext.popup.errors, []);
+  }
+});
+
+test('Scan for Clearance starts normally when nothing is running', async () => {
+  const store = scriptedStore();
+  const ext = loadExtension({ respond: store.respond });
+
+  await runFullScanFromPopup(ext);
+
+  assert.equal(ext.storage.scanState.scanType, 'sitemap');
+  assert.equal(ext.storage.scanState.checked, store.productCount);
+  assert.deepEqual(refusals(ext), []);
+  assert.deepEqual(ext.popup.errors, []);
+});
+
+test('Resume still resumes a paused scan when nothing is running', async () => {
+  const skus = skuList(3 * WAVE);
+  const paused = interruptedScanStorage(skus);
+  paused.scanState.running = false;
+  paused.scanState.userStopped = true;
+  const ext = loadExtension({ storage: paused, respond: scriptedStore().respond });
+
+  await ext.popup.clickResume();
+  await ext.idle();
+
+  assert.deepEqual(refusals(ext), []);
+  assert.match(ext.popup.status.at(-1), /^Resuming scan from 80/);
+  assert.equal(ext.storage.scanState.checked, 3 * WAVE);
+  assert.equal(completions(ext).length, 1);
+});
+
+test('every scan button and Resume do nothing while prices are being checked', async () => {
+  const skus = skuList(3 * WAVE);
+  const clicks = [];
+  const ext = loadExtension({
+    storage: savedProductList(skus),
+    respond: scriptedStore().respond,
+    onBroadcast: onFirst(firstWaveSaved, () => {
+      clicks.push(
+        ext.popup.clickQuickRecheck(),
+        ext.popup.clickPennyScan(),
+        ext.popup.clickFullScan(),
+        ext.popup.clickResume()
+      );
+    }),
+  });
+
+  await startScan(ext, skus);
+  await ext.idle();
+  await Promise.all(clicks);
+
+  assert.equal(refusals(ext).length, 4, 'each click was answered with "already running"');
+  assert.equal(ext.popup.view.scanning, true, 'the popup switched to its scanning view');
+  assert.equal(completions(ext).length, 1);
+  assert.equal(ext.storage.scanState.scanType, 'skuCheckOnly', 'the running scan was not replaced');
+  assert.deepEqual(productsAskedMoreThanOnce(ext.requests), []);
+  assert.equal(ext.requests.filter(isSitemapRequest).length, 0, 'no product-list request was made');
+});
+
+test('the scan buttons do nothing while a full scan is building its product list', async () => {
+  const cachedList = savedProductList(skuList(WAVE));
+  const lone = loadExtension({ storage: cachedList, respond: scriptedStore().respond });
+  await runFullScanFromPopup(lone);
+
+  const store = scriptedStore();
+  const clicks = [];
+  const ext = loadExtension({
+    storage: cachedList,
+    respond: (request, n) => {
+      // On the first product-list request, press all three scan buttons.
+      if (n === 1) {
+        clicks.push(ext.popup.clickFullScan(), ext.popup.clickQuickRecheck(), ext.popup.clickPennyScan());
+      }
+      return store.respond(request);
+    },
+  });
+  await runFullScanFromPopup(ext);
+  await Promise.all(clicks);
+
+  assert.equal(refusals(ext).length, 3, 'each click was answered with "already running"');
+  assert.equal(
+    ext.requests.length, lone.requests.length,
+    'Home Depot was asked no more than one full scan asks'
+  );
+  assert.equal(ext.storage.scanState.scanType, 'sitemap');
+  assert.equal(completions(ext).length, 1);
+});
+
+test('a double click on Scan for Clearance builds one product list', async () => {
+  const lone = loadExtension({ respond: scriptedStore().respond });
+  await runFullScanFromPopup(lone);
+
+  const ext = loadExtension({ respond: scriptedStore().respond });
+  ext.popup.clickFullScan(); // both clicks land before either scan has started
+  await runFullScanFromPopup(ext);
+
+  assert.equal(refusals(ext).length, 1, 'the second click ended on "already running"');
+  assert.equal(ext.requests.length, lone.requests.length);
+  assert.equal(completions(ext).length, 1);
+});
+
+test('a double click on Quick Recheck starts one scan', async () => {
+  const skus = skuList(2 * WAVE);
+  const ext = loadExtension({ storage: savedProductList(skus), respond: scriptedStore().respond });
+
+  const first = ext.popup.clickQuickRecheck(); // both clicks land before either scan has started
+  await ext.popup.clickQuickRecheck();
+  await first;
+  await ext.idle();
+
+  assert.equal(refusals(ext).length, 1, 'one of the two clicks ended on "already running"');
+  assert.equal(completions(ext).length, 1);
+  assert.equal(ext.storage.scanState.checked, 2 * WAVE);
+  assert.deepEqual(productsAskedMoreThanOnce(ext.requests), []);
+});
+
+test('on opening, the popup shows a running scan at once, and nothing when none is running', async () => {
+  const idle = loadExtension({ respond: scriptedStore().respond });
+  assert.equal(await idle.popup.open(), null);
+  assert.equal(idle.popup.view.scanning, false);
+  assert.deepEqual(idle.popup.status, []);
+
+  let openedWhilePricing;
+  const pricing = loadExtension({
+    respond: scriptedStore().respond,
+    onBroadcast: onFirst(firstWaveSaved, () => { openedWhilePricing = pricing.popup.open(); }),
+  });
+  await startScan(pricing, skuList(3 * WAVE));
+  await pricing.idle();
+  assert.equal(await openedWhilePricing, 'scan');
+  assert.equal(pricing.popup.view.scanning, true);
+  assert.match(pricing.popup.status.at(-1), /^Scan running/);
+
+  let openedWhileListing;
+  const store = scriptedStore();
+  const listing = loadExtension({
+    respond: (request, n) => {
+      if (n === 1) openedWhileListing = listing.popup.open();
+      return store.respond(request);
+    },
+  });
+  await listing.popup.toTab(fullScan);
+  await listing.idle();
+  assert.equal(await openedWhileListing, 'discovery');
+  assert.equal(listing.popup.view.scanning, true);
+  assert.match(listing.popup.status.at(-1), /building the product list/);
 });
