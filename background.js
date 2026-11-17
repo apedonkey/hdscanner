@@ -357,6 +357,23 @@ function beginScanFromResume({ st, skus, items }) {
   runScanLoop(scanState, skus);
 }
 
+// Stop the scan that is running and save where it paused, so it can be resumed.
+// Returns false, and touches nothing, when no scan is running: scanState is then
+// the last scan's, or the empty default after a worker restart, and saving it
+// would overwrite the saved results and the resume point.
+function stopRunningScan() {
+  if (!scanState.running) return false;
+  console.log('[Background] Stopping scan');
+  scanState.running = false;
+  scanState.userStopped = true;
+  stopKeepAlive();
+  chrome.storage.local.set({
+    scanState: persistableState(scanState),
+    clearanceItems: scanState.clearanceItems
+  });
+  return true;
+}
+
 // ============================================================
 // ==================== KEEP-ALIVE / ALARMS ===================
 // ============================================================
@@ -556,6 +573,14 @@ async function runScanLoop(state, skus) {
   // prevents duplicate Telegram notifications when a wave is replayed.
   const seenIds = new Set(state.clearanceItems.map(it => String(it.itemId)));
 
+  // The tab answers stopped:true when the popup's Stop reached it while a batch
+  // was in flight. stopBackgroundScan normally arrives as well; if it has not,
+  // pause the scan here the same way, so the Stop is honoured either way.
+  const noteTabStop = (response) => {
+    // While this loop is not stale, its `state` is the current scanState.
+    if (response?.stopped && !stale()) stopRunningScan();
+  };
+
   startKeepAlive();
 
   try {
@@ -610,13 +635,21 @@ async function runScanLoop(state, skus) {
       needLogClear = false;
     }
 
+    // Stop may have arrived while the tab was being found or prepared.
+    if (!state.running) break;
+
+    // This wave's tallies. They are added to `state`, together with the cursor,
+    // only once the wave has run to its end (see "Commit the wave" below).
     let waveErrors = 0;
+    let waveClearanceSeen = 0;
+    let waveFilteredOut = 0;
 
     if (isPennyScan) {
       // ===== PENNY SCAN: Fast batch using products() endpoint =====
       try {
         const batchResponse = await checkPennyBatchViaTab(cachedTabId, wave, state.storeId);
         if (stale()) return;
+        noteTabStop(batchResponse);
         // Key results by itemId — never trust array position to line up with
         // the request wave (short/partial responses would mislabel SKUs).
         const resultsById = new Map();
@@ -627,10 +660,8 @@ async function runScanLoop(state, skus) {
 
         for (const sku of wave) {
           const result = resultsById.get(String(sku));
-          state.checked++;
 
           if (!result || result.error) {
-            state.errors++;
             waveErrors++;
             continue;
           }
@@ -689,8 +720,6 @@ async function runScanLoop(state, skus) {
         console.log('[Background] Penny scan wave failed:', e.message);
         if (stale()) return;
         cachedTabId = null;
-        state.checked += wave.length;
-        state.errors += wave.length;
         waveErrors = wave.length;
       }
     } else {
@@ -699,6 +728,7 @@ async function runScanLoop(state, skus) {
       let lightById = new Map();
       try {
         const response = await checkSkuBatchLightViaTab(cachedTabId, wave, state.storeId);
+        noteTabStop(response);
         for (const r of (response?.results || [])) {
           if (r && r.itemId != null) lightById.set(String(r.itemId), r);
         }
@@ -710,14 +740,10 @@ async function runScanLoop(state, skus) {
 
       const clearanceHits = [];
       const lightClearanceData = {};
-      let waveClearanceSeen = 0;
-      let waveFilteredOut = 0;
 
       for (const sku of wave) {
         const result = lightById.get(String(sku));
-        state.checked++;
         if (!result || result.error) {
-          state.errors++;
           waveErrors++;
         } else if (result.clearance) {
           waveClearanceSeen++;
@@ -734,9 +760,6 @@ async function runScanLoop(state, skus) {
         }
       }
 
-      state.totalClearanceSeen += waveClearanceSeen;
-      state.totalFilteredOut += waveFilteredOut;
-
       if (waveClearanceSeen > 0) {
         console.log(`[Background] Wave: ${wave.length} checked, ${waveClearanceSeen} clearance, ${clearanceHits.length} passed filter, ${waveFilteredOut} filtered, ${waveErrors} errors`);
       }
@@ -749,6 +772,7 @@ async function runScanLoop(state, skus) {
         try {
           const detailResponse = await getProductDetailsViaTab(cachedTabId, clearanceHits, state.storeId);
           if (stale()) return;
+          noteTabStop(detailResponse);
           const detailResults = detailResponse?.results || [];
 
           for (let i = 0; i < detailResults.length; i++) {
@@ -804,6 +828,19 @@ async function runScanLoop(state, skus) {
       }
     }
 
+    // A Stop that arrived while this wave was in flight leaves it unfinished: the
+    // details pass is skipped or cut short. Leave the cursor and the counters
+    // where they were, so Resume checks this wave again instead of skipping it.
+    if (!state.running) {
+      console.log(`[Background] Stopped mid-wave: products ${state.currentIndex + 1}-${state.currentIndex + wave.length} will be checked again on resume`);
+      break;
+    }
+
+    // Commit the wave: its tallies and the cursor move together.
+    state.checked += wave.length;
+    state.errors += waveErrors;
+    state.totalClearanceSeen += waveClearanceSeen;
+    state.totalFilteredOut += waveFilteredOut;
     state.currentIndex += wave.length;
 
     const waveElapsed = Math.round((Date.now() - waveStartMs) / 1000);
@@ -977,16 +1014,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'stopBackgroundScan') {
-    console.log('[Background] Stopping scan');
-    scanState.running = false;
-    scanState.userStopped = true;
-    stopKeepAlive();
-    // Save progress so the scan can be resumed later.
-    chrome.storage.local.set({
-      scanState: persistableState(scanState),
-      clearanceItems: scanState.clearanceItems
-    });
-    sendResponse({ stopped: true });
+    if (stopRunningScan()) {
+      sendResponse({ stopped: true });
+      return true;
+    }
+    // No scan is running right now. That is normal when Stop is pressed while a
+    // full scan is still building its product list, which happens in the tab.
+    // But if this message is what woke the worker, the startup check may be
+    // about to pick an interrupted scan back up: wait for it, then stop that.
+    startupResumeCheck.then(() => sendResponse({ stopped: stopRunningScan() }));
     return true;
   }
 
@@ -1254,14 +1290,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
-// On startup, check if there's an interrupted scan to resume
-(async () => {
+// On startup, check if there's an interrupted scan to resume. stopBackgroundScan
+// waits on this promise, so it must always settle as resolved.
+const startupResumeCheck = (async () => {
   const resume = await loadResumeData();
   if (resume && resume.st.running) {
     console.log('[Background] Found interrupted scan, auto-resuming from index', resume.st.currentIndex);
     beginScanFromResume(resume);
   }
-})();
+})().catch((e) => {
+  console.warn('[Background] Startup resume check failed:', e && e.message);
+});
 
 // ============================================================
 // ==================== TELEGRAM BOT CONTROL ==================

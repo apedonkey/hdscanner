@@ -317,8 +317,23 @@ let rateLimitHits = 0;
 // caller waits out this window instead of hammering the endpoint in parallel.
 let sharedCooldownUntil = 0;
 
-// Global scan stop flag
+// Stop flag for discovery (the sitemap scan), which runs inside this script. Set
+// by Stop and cleared when the next discovery starts. Nothing else may read it:
+// batch requests from the background worker use watchForStop() below.
 let scanStopped = false;
+
+// Number of Stop requests received so far.
+let stopRequestCount = 0;
+
+// For a batch request from the background worker. Returns a function that says
+// whether a Stop has arrived since watchForStop() was called, so a Stop ends the
+// batches in flight when it arrives and nothing that starts afterwards. Batches
+// used to read scanStopped, which stays set: after any Stop, every later Resume,
+// Quick Recheck and Penny Scan in this tab checked nothing until a reload.
+function watchForStop() {
+  const countAtStart = stopRequestCount;
+  return () => stopRequestCount !== countAtStart;
+}
 
 // Count of categories that recorded 0 products because their API call errored
 // (rate-limited / HTTP / timeout) rather than genuinely being empty.
@@ -696,18 +711,19 @@ function parseProductResult(product, itemId, storeId) {
 // Fallback path when the batch query fails. Runs single checks SEQUENTIALLY with
 // a small delay instead of firing ~16 concurrent requests — which is exactly the
 // wrong move when the batch just failed because we're being rate-limited. Bails
-// early (returning partial results) if a stop was requested mid-way.
-async function checkSkusSequential(skus, storeId) {
+// early (returning partial results) once stopRequested(), from watchForStop(),
+// says a Stop has arrived.
+async function checkSkusSequential(skus, storeId, stopRequested) {
   const results = [];
   for (const sku of skus) {
-    if (scanStopped) break;
+    if (stopRequested()) break;
     results.push(await checkSku(sku, storeId));
     await new Promise(r => setTimeout(r, 150));
   }
   return results;
 }
 
-async function checkSkuBatchFast(skus, storeId) {
+async function checkSkuBatchFast(skus, storeId, stopRequested) {
   try {
     const query = buildBatchQuery(skus);
     const data = await apiCall('batchProducts', { storeId }, query);
@@ -715,7 +731,7 @@ async function checkSkuBatchFast(skus, storeId) {
     if (data.error || !data.data) {
       // Batch query failed — fall back to individual queries
       console.log('[HD Scanner] Batch query failed, falling back to individual checks');
-      return await checkSkusSequential(skus, storeId);
+      return await checkSkusSequential(skus, storeId, stopRequested);
     }
 
     // Parse each aliased result
@@ -730,7 +746,7 @@ async function checkSkuBatchFast(skus, storeId) {
   } catch (e) {
     console.error('[HD Scanner] Batch check error:', e);
     // Fall back to individual
-    return await checkSkusSequential(skus, storeId);
+    return await checkSkusSequential(skus, storeId, stopRequested);
   }
 }
 
@@ -1315,7 +1331,8 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
   // Stop any scan (general stop handler)
   if (request.action === 'stopScan' || request.action === 'stopSitemapScan') {
-    scanStopped = true;
+    scanStopped = true;   // ends a discovery in progress
+    stopRequestCount++;   // ends the batch requests in flight (see watchForStop)
     console.log('[HD Scanner] Stop requested - stopping all scans');
     sendResponse({ ok: true });
     return true;
@@ -1600,10 +1617,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Fast batch check — single GraphQL request for multiple SKUs
   if (request.action === 'checkSkuBatchFast') {
     (async () => {
+      const stopRequested = watchForStop();
       // Ensure the persisted cache is loaded before we set/save into it, so a
       // late-resolving startup load can't clobber the items written here.
       await CLEARANCE_CACHE.load();
-      const results = await checkSkuBatchFast(request.skus, request.storeId);
+      const results = await checkSkuBatchFast(request.skus, request.storeId, stopRequested);
       await CLEARANCE_CACHE.save();
       sendResponse({ results });
     })();
@@ -1616,6 +1634,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   if (request.action === 'checkSkuBatchLight') {
     (async () => {
       const { skus, storeId } = request;
+      const stopRequested = watchForStop();
       const CHUNK_SIZE = 16;      // HD API max for products()
       const PARALLEL_CHUNKS = 5;  // 5 parallel = 80 SKUs per wave — proven safe
       // Snapshot the global 403 counter — the response reports throttle events
@@ -1640,7 +1659,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       // Process in parallel waves
       for (let i = 0; i < chunks.length; i += PARALLEL_CHUNKS) {
-        if (scanStopped) break;  // honor stop between waves; return partial results
+        if (stopRequested()) break;  // honor stop between waves; return partial results
         const wave = chunks.slice(i, i + PARALLEL_CHUNKS);
         const waveResults = await Promise.all(wave.map(async (chunk) => {
           try {
@@ -1724,7 +1743,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       sendResponse({
         results: allResults,
-        stopped: scanStopped,
+        stopped: stopRequested(),
         rateLimitHits: rateLimitHits - rateLimitHitsAtStart
       });
     })();
@@ -1737,13 +1756,14 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
     (async () => {
       const { skus, storeId } = request;
       const results = [];
+      const stopRequested = watchForStop();
 
       // Ensure the persisted cache is loaded before checkSku writes into it.
       await CLEARANCE_CACHE.load();
 
       // Use existing single-product query for each (small list, ~50-100 max)
       for (const sku of skus) {
-        if (scanStopped) break;  // honor stop between lookups; return partial results
+        if (stopRequested()) break;  // honor stop between lookups; return partial results
         try {
           const result = await checkSku(sku, storeId);
           results.push(result);
@@ -1757,7 +1777,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       await CLEARANCE_CACHE.save();
-      sendResponse({ results, stopped: scanStopped });
+      sendResponse({ results, stopped: stopRequested() });
     })();
     return true;
   }
@@ -1821,6 +1841,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       const { skus, storeId } = request;
       const CHUNK_SIZE = 16;
       const PARALLEL_CHUNKS = 5;  // proven safe
+      const stopRequested = watchForStop();
       const rateLimitHitsAtStart = rateLimitHits;
 
       const pennyQuery = `query mediaPriceInventory($itemIds: [String!]!, $storeId: String!) {
@@ -1840,7 +1861,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }
 
       for (let i = 0; i < chunks.length; i += PARALLEL_CHUNKS) {
-        if (scanStopped) break;  // honor stop between waves; return partial results
+        if (stopRequested()) break;  // honor stop between waves; return partial results
         const wave = chunks.slice(i, i + PARALLEL_CHUNKS);
         const waveResults = await Promise.all(wave.map(async (chunk) => {
           try {
@@ -1936,7 +1957,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       sendResponse({
         results: allResults,
-        stopped: scanStopped,
+        stopped: stopRequested(),
         rateLimitHits: rateLimitHits - rateLimitHitsAtStart
       });
     })();
