@@ -1,11 +1,15 @@
 'use strict';
 // Test harness for the extension.
 //
-// Loads the real content.js into an isolated VM context with a minimal fake of
-// the browser APIs it touches, then drives it through its message listener the
-// same way background.js does. Nothing here talks to the network: every fetch()
-// is answered by the test's own script. Timers fire immediately and advance a
-// virtual clock, so the 10/30/90-second backoffs cost no real time.
+// Loads the real extension scripts into isolated VM contexts with a minimal fake
+// of the browser APIs they touch. There are two ways in:
+//   loadContentScript()  content.js on its own, driven through its message
+//                        listener the same way background.js drives it.
+//   loadExtension()      background.js and content.js wired together, driven the
+//                        way the popup drives them.
+// Nothing here talks to the network: every fetch() is answered by the test's own
+// script. Timers fire immediately and advance a virtual clock, so the 10/30/90-
+// second backoffs and the pauses between scan waves cost no real time.
 //
 // Run all tests from the extension folder with:  node --test
 
@@ -17,6 +21,12 @@ const EXT_ROOT = path.resolve(__dirname, '..');
 
 function readSource(name) {
   return fs.readFileSync(path.join(EXT_ROOT, name), 'utf8');
+}
+
+// A copy that shares nothing with the original, as Chrome's own serialisation of
+// messages and stored values produces. Also moves a value out of a VM realm.
+function copy(value) {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
 // What fetch() resolves to. `body` is what json() returns; leave it undefined to
@@ -35,55 +45,102 @@ function fakeResponse({ status = 200, contentType = 'application/json', body } =
   };
 }
 
-// Load content.js and return a handle for talking to it.
-//   respond(request, n) -> { status, contentType, body } for the n-th fetch (1-based)
-// The handle exposes:
-//   send(message)  -> Promise of the listener's response (as background.js would get it)
-//   requests       -> every fetch made so far: { url, payload }
-//   waits          -> every setTimeout delay requested so far, in ms
-function loadContentScript({ respond }) {
-  const requests = [];
+// A virtual clock, plus timers that fire on the next turn of the event loop and
+// move the clock to the moment they were due. `waits` lists every delay asked for.
+function createClock() {
   const waits = [];
-  const consoleErrors = [];
-  let listener = null;
-  let virtualNow = 1_700_000_000_000;
-
-  const sandbox = {
-    console: {
-      log() {},
-      warn() {},
-      error: (...args) => { consoleErrors.push(args.map(String).join(' ')); },
-    },
-    URL,
-    AbortController,
+  let now = 1_700_000_000_000;
+  return {
+    waits,
+    now: () => now,
     setTimeout: (fn, ms = 0) => {
       waits.push(ms);
-      const due = virtualNow + ms;
+      const due = now + ms;
       return setTimeout(() => {
-        virtualNow = Math.max(virtualNow, due);
+        now = Math.max(now, due);
         fn();
       }, 0);
     },
     clearTimeout: (id) => clearTimeout(id),
+  };
+}
+
+// An in-memory chrome.storage.local. `api` is what the scripts see; `data` is
+// its live contents, for tests to read.
+function createStorageArea(initial = {}) {
+  const data = copy(initial);
+  const api = {
+    get: async (keys) => {
+      if (keys == null) return copy(data);
+      const names = typeof keys === 'string' ? [keys] : Array.isArray(keys) ? keys : Object.keys(keys);
+      const found = {};
+      for (const name of names) {
+        if (name in data) found[name] = copy(data[name]);
+      }
+      return found;
+    },
+    set: async (items) => {
+      for (const [name, value] of Object.entries(items)) data[name] = copy(value);
+    },
+    remove: async (keys) => {
+      for (const name of [].concat(keys)) delete data[name];
+    },
+  };
+  return { data, api };
+}
+
+// A console that prints nothing and keeps error lines for failure messages.
+function silentConsole(errors) {
+  return {
+    log() {},
+    warn() {},
+    error: (...args) => { errors.push(args.map(String).join(' ')); },
+  };
+}
+
+// Hand a message to an onMessage listener and resolve with its answer, the way
+// chrome.tabs.sendMessage and chrome.runtime.sendMessage do. Resolves with
+// undefined when the listener neither answers nor keeps the channel open.
+function deliver(listener, message, sender = {}) {
+  return new Promise((resolve) => {
+    let answered = false;
+    const sendResponse = (response) => {
+      if (answered) return;
+      answered = true;
+      resolve(copy(response));
+    };
+    const keepsChannelOpen = listener(copy(message), sender, sendResponse);
+    if (keepsChannelOpen !== true && !answered) resolve(undefined);
+  });
+}
+
+// Run content.js in a fresh VM context and return its message listener.
+//   respond(request, n)  answer for the n-th fetch: { status, contentType, body }
+//   requests             array every fetch is appended to: { url, payload }
+//   toRuntime(message)   what chrome.runtime.sendMessage does with a message
+function runContentScript({ respond, requests, clock, storage, toRuntime }) {
+  const consoleErrors = [];
+  let listener = null;
+
+  const sandbox = {
+    console: silentConsole(consoleErrors),
+    URL,
+    AbortController,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
     fetch: async (url, init = {}) => {
       const request = { url: String(url), payload: init.body ? JSON.parse(init.body) : null };
       requests.push(request);
       return fakeResponse(respond(request, requests.length));
     },
     chrome: {
-      storage: {
-        local: {
-          get: async () => ({}),
-          set: async () => {},
-          remove: async () => {},
-        },
-      },
+      storage: { local: storage.api },
       runtime: {
         onMessage: { addListener: (fn) => { listener = fn; } },
-        sendMessage: async () => {},
+        sendMessage: (message) => toRuntime(message),
       },
     },
-    __virtualNow: () => virtualNow,
+    __virtualNow: clock.now,
   };
   sandbox.window = sandbox;
 
@@ -95,6 +152,25 @@ function loadContentScript({ respond }) {
     // content.js wraps itself in try/catch and only logs a fatal load error.
     throw new Error(`content.js registered no message listener. ${consoleErrors[0] || ''}`);
   }
+  return listener;
+}
+
+// Load content.js on its own and return a handle for talking to it.
+//   respond(request, n) -> { status, contentType, body } for the n-th fetch (1-based)
+// The handle exposes:
+//   send(message)  -> Promise of the listener's response (as background.js would get it)
+//   requests       -> every fetch made so far: { url, payload }
+//   waits          -> every setTimeout delay requested so far, in ms
+function loadContentScript({ respond }) {
+  const requests = [];
+  const clock = createClock();
+  const listener = runContentScript({
+    respond,
+    requests,
+    clock,
+    storage: createStorageArea(),
+    toRuntime: async () => {},
+  });
 
   function send(message) {
     return new Promise((resolve, reject) => {
@@ -102,16 +178,139 @@ function loadContentScript({ respond }) {
         () => reject(new Error(`content.js sent no response to "${message.action}" within 5s`)),
         5000
       );
-      listener(message, {}, (response) => {
+      deliver(listener, message).then((response) => {
         clearTimeout(guard);
-        // Round-trip through JSON: the response was built inside the VM realm,
-        // and this also mirrors how Chrome serialises messages.
-        resolve(JSON.parse(JSON.stringify(response)));
+        resolve(response);
       });
     });
   }
 
-  return { send, requests, waits };
+  return { send, requests, waits: clock.waits };
+}
+
+// Load background.js and content.js and wire them together the way Chrome does:
+//   - the worker reaches the tab through chrome.tabs.sendMessage,
+//   - the tab reaches the worker through chrome.runtime.sendMessage,
+//   - both share one chrome.storage.local,
+//   - whatever either side broadcasts (progress, completion) is what an open
+//     popup would receive; it is collected in `broadcasts`.
+// Options:
+//   respond(request, n)   answer for the tab's n-th fetch, as in loadContentScript
+//   storage               initial contents of chrome.storage.local
+//   onBroadcast(message)  called for each broadcast as it happens
+// The handle exposes:
+//   popup.toBackground(message), popup.toTab(message)   what the popup sends
+//   popup.pressStop()     runs popup.js's real stopScan()
+//   idle()                resolves once the worker's scan loop has ended
+//   requests, broadcasts, waits
+//   storage               live contents of chrome.storage.local
+function loadExtension({ respond, storage: initialStorage = {}, onBroadcast = () => {} }) {
+  const requests = [];
+  const broadcasts = [];
+  const backgroundErrors = [];
+  const clock = createClock();
+  const storage = createStorageArea(initialStorage);
+  const hdTab = { id: 1, windowId: 1, active: true, url: 'https://www.homedepot.com/' };
+  let backgroundListener = null;
+  let contentListener = null;
+
+  const broadcast = (message) => {
+    const seen = copy(message);
+    broadcasts.push(seen);
+    onBroadcast(seen);
+  };
+  const toBackground = (message, sender = {}) => deliver(backgroundListener, message, sender);
+  const toTab = (message) => deliver(contentListener, message);
+
+  const backgroundSandbox = {
+    console: silentConsole(backgroundErrors),
+    URL,
+    setTimeout: clock.setTimeout,
+    clearTimeout: clock.clearTimeout,
+    fetch: async (url) => {
+      throw new Error(`background.js made an unexpected request to ${url}`);
+    },
+    chrome: {
+      storage: { local: storage.api, onChanged: { addListener() {} } },
+      alarms: { create() {}, clear() {}, onAlarm: { addListener() {} } },
+      tabs: {
+        query: async () => [copy(hdTab)],
+        // background.js uses both the callback form and the promise form.
+        sendMessage: (_tabId, message, callback) => {
+          const answer = toTab(message);
+          if (typeof callback !== 'function') return answer;
+          answer.then(callback);
+          return undefined;
+        },
+      },
+      scripting: {
+        executeScript: async () => {
+          throw new Error('background.js tried to inject the content script, which is already loaded');
+        },
+      },
+      runtime: {
+        lastError: undefined,
+        onMessage: { addListener: (fn) => { backgroundListener = fn; } },
+        // From the worker, only an open popup is listening.
+        sendMessage: async (message) => { broadcast(message); },
+      },
+    },
+    __virtualNow: clock.now,
+  };
+  vm.createContext(backgroundSandbox);
+  vm.runInContext('Date.now = () => __virtualNow();', backgroundSandbox);
+  vm.runInContext(readSource('background.js'), backgroundSandbox, { filename: 'background.js' });
+  if (!backgroundListener) throw new Error('background.js registered no message listener');
+
+  contentListener = runContentScript({
+    respond,
+    requests,
+    clock,
+    storage,
+    // From the tab, the worker handles the message and an open popup sees it too.
+    toRuntime: (message) => {
+      broadcast(message);
+      return toBackground(message, { tab: copy(hdTab) });
+    },
+  });
+
+  // popup.js's real Stop handler, with the popup's own plumbing replaced.
+  const popupSandbox = vm.createContext({
+    setStatus() {},
+    setScanningUI() {},
+    checkForInterruptedScan() {},
+    sendToContentScript: (message) => toTab(message),
+    chrome: { runtime: { sendMessage: (message) => toBackground(message) } },
+  });
+  vm.runInContext(
+    topLevelFunctionSource(readSource('popup.js'), 'stopScan', 'popup.js'),
+    popupSandbox,
+    { filename: 'popup.js (stopScan)' }
+  );
+  const pressStop = () => { vm.runInContext('stopScan()', popupSandbox); };
+
+  // Resolves once the worker's scan loop has ended, whether the scan finished
+  // or was stopped.
+  async function idle() {
+    const giveUpAt = Date.now() + 10000;
+    do {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      if (Date.now() > giveUpAt) {
+        throw new Error(`the scan loop was still running after 10s. ${backgroundErrors[0] || ''}`);
+      }
+    } while (vm.runInContext('scanLoopActive', backgroundSandbox));
+    // One more turn, so the loop's last storage writes and broadcasts have landed.
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  }
+
+  return {
+    popup: { toBackground, toTab, pressStop },
+    idle,
+    requests,
+    broadcasts,
+    waits: clock.waits,
+    storage: storage.data,
+  };
 }
 
 // Text strictly between the line containing `beginMarker` and the line
@@ -194,6 +393,7 @@ async function runPopupApiTest(respond) {
 module.exports = {
   readSource,
   loadContentScript,
+  loadExtension,
   sliceBetweenMarkers,
   sharedHelperBlock,
   loadPopupHelpers,
