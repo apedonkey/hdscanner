@@ -201,6 +201,7 @@ function loadContentScript({ respond }) {
 // The handle exposes:
 //   popup.toBackground(message), popup.toTab(message)   what the popup sends
 //   popup.pressStop()     runs popup.js's real stopScan()
+//   popup.status          every status line the popup would have shown, in order
 //   idle()                resolves once the worker's scan loop has ended
 //   requests, broadcasts, waits
 //   storage               live contents of chrome.storage.local
@@ -275,8 +276,9 @@ function loadExtension({ respond, storage: initialStorage = {}, onBroadcast = ()
   });
 
   // popup.js's real Stop handler, with the popup's own plumbing replaced.
+  const popupStatus = [];
   const popupSandbox = vm.createContext({
-    setStatus() {},
+    setStatus: (text) => { popupStatus.push(text); },
     setScanningUI() {},
     checkForInterruptedScan() {},
     sendToContentScript: (message) => toTab(message),
@@ -304,7 +306,7 @@ function loadExtension({ respond, storage: initialStorage = {}, onBroadcast = ()
   }
 
   return {
-    popup: { toBackground, toTab, pressStop },
+    popup: { toBackground, toTab, pressStop, status: popupStatus },
     idle,
     requests,
     broadcasts,

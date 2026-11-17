@@ -1266,9 +1266,13 @@ function stopScan() {
 
   // Stop background scan — state is preserved for resume
   chrome.runtime.sendMessage({ action: 'stopBackgroundScan' })
-    .then(() => {
+    .then((response) => {
       setScanningUI(false);
-      setStatus('Scan paused — resume it any time from the banner above.');
+      // stopped:false means no price check was running (Stop was pressed while
+      // the product list was still being built), so nothing new was paused.
+      setStatus(response?.stopped === false
+        ? 'Scan stopped.'
+        : 'Scan paused — resume it any time from the banner above.');
       checkForInterruptedScan();
     })
     .catch(() => {

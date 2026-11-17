@@ -357,6 +357,23 @@ function beginScanFromResume({ st, skus, items }) {
   runScanLoop(scanState, skus);
 }
 
+// Stop the scan that is running and save where it paused, so it can be resumed.
+// Returns false, and touches nothing, when no scan is running: scanState is then
+// the last scan's, or the empty default after a worker restart, and saving it
+// would overwrite the saved results and the resume point.
+function stopRunningScan() {
+  if (!scanState.running) return false;
+  console.log('[Background] Stopping scan');
+  scanState.running = false;
+  scanState.userStopped = true;
+  stopKeepAlive();
+  chrome.storage.local.set({
+    scanState: persistableState(scanState),
+    clearanceItems: scanState.clearanceItems
+  });
+  return true;
+}
+
 // ============================================================
 // ==================== KEEP-ALIVE / ALARMS ===================
 // ============================================================
@@ -560,14 +577,8 @@ async function runScanLoop(state, skus) {
   // was in flight. stopBackgroundScan normally arrives as well; if it has not,
   // pause the scan here the same way, so the Stop is honoured either way.
   const noteTabStop = (response) => {
-    if (!response?.stopped || !state.running || stale()) return;
-    console.log('[Background] The tab reports a Stop: pausing the scan');
-    state.running = false;
-    state.userStopped = true;
-    chrome.storage.local.set({
-      scanState: persistableState(state),
-      clearanceItems: state.clearanceItems
-    });
+    // While this loop is not stale, its `state` is the current scanState.
+    if (response?.stopped && !stale()) stopRunningScan();
   };
 
   startKeepAlive();
@@ -1003,16 +1014,15 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'stopBackgroundScan') {
-    console.log('[Background] Stopping scan');
-    scanState.running = false;
-    scanState.userStopped = true;
-    stopKeepAlive();
-    // Save progress so the scan can be resumed later.
-    chrome.storage.local.set({
-      scanState: persistableState(scanState),
-      clearanceItems: scanState.clearanceItems
-    });
-    sendResponse({ stopped: true });
+    if (stopRunningScan()) {
+      sendResponse({ stopped: true });
+      return true;
+    }
+    // No scan is running right now. That is normal when Stop is pressed while a
+    // full scan is still building its product list, which happens in the tab.
+    // But if this message is what woke the worker, the startup check may be
+    // about to pick an interrupted scan back up: wait for it, then stop that.
+    startupResumeCheck.then(() => sendResponse({ stopped: stopRunningScan() }));
     return true;
   }
 
@@ -1280,14 +1290,17 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   return false;
 });
 
-// On startup, check if there's an interrupted scan to resume
-(async () => {
+// On startup, check if there's an interrupted scan to resume. stopBackgroundScan
+// waits on this promise, so it must always settle as resolved.
+const startupResumeCheck = (async () => {
   const resume = await loadResumeData();
   if (resume && resume.st.running) {
     console.log('[Background] Found interrupted scan, auto-resuming from index', resume.st.currentIndex);
     beginScanFromResume(resume);
   }
-})();
+})().catch((e) => {
+  console.warn('[Background] Startup resume check failed:', e && e.message);
+});
 
 // ============================================================
 // ==================== TELEGRAM BOT CONTROL ==================

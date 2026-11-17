@@ -506,3 +506,117 @@ test('unchanged: a wave Home Depot fails outright is counted as errors and passe
   assert.equal(state.currentIndex, 3 * WAVE);
   assert.equal(completions(ext).length, 1);
 });
+
+// ---------------------------------------------------------------------------
+// Stop when nothing is being price-checked
+//
+// Stop is also pressed while a full scan is still building its product list,
+// which happens in the tab. The worker's own scan state is then the last
+// scan's, or empty if the worker has restarted since. Saving that state on Stop
+// used to overwrite the saved results and the resume point with it.
+// ---------------------------------------------------------------------------
+
+// chrome.storage.local as a scan paused at 160 of 240 leaves it, with one find.
+function pausedScanStorage(skus, stateOverrides = {}) {
+  return {
+    scanSkus: skus,
+    scanState: {
+      running: false,
+      storeId: STORE,
+      total: skus.length,
+      currentIndex: 2 * WAVE,
+      checked: 2 * WAVE,
+      errors: 0,
+      startTime: 1_700_000_000_000,
+      scanType: 'skuCheckOnly',
+      userStopped: true,
+      totalClearanceSeen: 1,
+      totalFilteredOut: 0,
+      ...stateOverrides,
+    },
+    clearanceItems: [
+      { itemId: skus[10], name: `Product ${skus[10]}`, clearancePrice: 12.03, location: AISLE },
+    ],
+  };
+}
+
+test('Stop while a new scan builds its product list leaves the paused scan and its finds alone', async () => {
+  const skus = skuList(3 * WAVE);
+  const deal = skus[2 * WAVE + 40]; // in the part of the paused scan still to do
+  const saved = pausedScanStorage(skus);
+  const homeDepot = scriptedHomeDepot({ clearance: [deal] });
+  const pressStopOnce = onFirst(() => true, () => ext.popup.pressStop());
+  const ext = loadExtension({
+    storage: saved,
+    // Product-list requests (plain GETs for sitemaps) answer 404, and Stop is
+    // pressed on the first of them.
+    respond: (request) => {
+      if (request.payload) return homeDepot(request);
+      pressStopOnce();
+      return { status: 404 };
+    },
+  });
+
+  const discovery = await ext.popup.toTab({ action: 'getStoreSkusSitemap', storeId: STORE });
+  await ext.idle();
+
+  assert.equal(discovery.stopped, true);
+  assert.deepEqual(ext.storage.scanState, saved.scanState, 'the paused scan is untouched');
+  assert.deepEqual(ext.storage.clearanceItems, saved.clearanceItems, 'its finds are untouched');
+  assert.equal(ext.popup.status.at(-1), 'Scan stopped.');
+
+  assert.deepEqual(await resumeScan(ext), { resumed: true, from: 2 * WAVE });
+  await ext.idle();
+
+  assertScanFinished(ext, { checked: 3 * WAVE, found: [skus[10], deal] });
+  assert.deepEqual(homeDepot.unexpected, []);
+});
+
+test('Stop after a scan has finished changes nothing that was saved', async () => {
+  const skus = skuList(WAVE);
+  const deal = skus[7];
+  const ext = loadExtension({ respond: scriptedHomeDepot({ clearance: [deal] }) });
+  await startScan(ext, skus);
+  await ext.idle();
+  const savedState = ext.storage.scanState;
+  const savedItems = ext.storage.clearanceItems;
+
+  ext.popup.pressStop();
+  await ext.idle();
+
+  assert.deepEqual(ext.storage.scanState, savedState);
+  assert.equal(ext.storage.scanState.userStopped, false, 'a finished scan is not relabelled as stopped');
+  assert.deepEqual(ext.storage.clearanceItems, savedItems);
+  assert.equal(ext.popup.status.at(-1), 'Scan stopped.');
+});
+
+test('Stop that wakes the worker stops the scan the worker was about to pick back up', async () => {
+  const skus = skuList(3 * WAVE);
+  const deal = skus[2 * WAVE + 40];
+  // What storage holds when the worker was shut down in the middle of a scan.
+  const saved = pausedScanStorage(skus, {
+    running: true,
+    userStopped: false,
+    currentIndex: WAVE,
+    checked: WAVE,
+  });
+  const homeDepot = scriptedHomeDepot({ clearance: [deal] });
+  const ext = loadExtension({ storage: saved, respond: homeDepot });
+
+  ext.popup.pressStop(); // arrives before the worker has looked for a scan to resume
+  await ext.idle();
+
+  assert.equal(ext.requests.length, 0, 'no product was asked about after the Stop');
+  const paused = ext.storage.scanState;
+  assert.equal(paused.running, false);
+  assert.equal(paused.userStopped, true);
+  assert.equal(paused.currentIndex, WAVE, 'the scan keeps its place');
+  assert.deepEqual(ext.storage.clearanceItems, saved.clearanceItems, 'its finds are kept');
+  assert.match(ext.popup.status.at(-1), /^Scan paused/);
+
+  await resumeScan(ext);
+  await ext.idle();
+
+  assertScanFinished(ext, { checked: 3 * WAVE, found: [skus[10], deal] });
+  assert.deepEqual(homeDepot.unexpected, []);
+});
