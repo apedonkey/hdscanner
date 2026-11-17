@@ -1000,6 +1000,13 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   }
 
   if (request.action === 'startBackgroundScan') {
+    // One scan at a time. A second start used to replace the running scan and
+    // throw away its progress.
+    if (scanState.running) {
+      console.log('[Background] Not starting a scan: one is already running');
+      sendResponse({ started: false, reason: 'already_running' });
+      return true;
+    }
     const isPenny = (request.scanType || '').includes('penny');
     console.log(`[Background] Starting ${isPenny ? 'penny ' : ''}scan with`, request.skus.length, 'SKUs');
 
@@ -1099,6 +1106,12 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // Resume interrupted scan
   if (request.action === 'resumeScan') {
     (async () => {
+      // One scan at a time: Resume must not replace a scan that is running.
+      await startupResumeCheck;
+      if (scanState.running) {
+        sendResponse({ resumed: false, reason: 'A scan is already running' });
+        return;
+      }
       const resume = await loadResumeData();
       if (resume) {
         console.log('[Background] Resuming scan from index', resume.st.currentIndex);

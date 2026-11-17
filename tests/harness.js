@@ -30,7 +30,8 @@ function copy(value) {
 }
 
 // What fetch() resolves to. `body` is what json() returns; leave it undefined to
-// simulate a body that is not valid JSON (an HTML block page, for example).
+// simulate a body that is not valid JSON (an HTML block page, for example). A
+// string body is what text() returns, as for a sitemap.
 function fakeResponse({ status = 200, contentType = 'application/json', body } = {}) {
   return {
     status,
@@ -42,7 +43,25 @@ function fakeResponse({ status = 200, contentType = 'application/json', body } =
       if (body === undefined) throw new SyntaxError('Unexpected token < in JSON at position 0');
       return structuredClone(body);
     },
+    text: async () => (typeof body === 'string' ? body : JSON.stringify(body ?? '')),
   };
+}
+
+// Stands in for the browser's DOMParser for the two lookups content.js makes on
+// a sitemap: the <loc> of every <sitemap> entry and of every <url> entry.
+class FakeDOMParser {
+  parseFromString(text) {
+    const locsOf = (tag) => [...String(text).matchAll(
+      new RegExp(`<${tag}>[\\s\\S]*?<loc>([\\s\\S]*?)</loc>[\\s\\S]*?</${tag}>`, 'g')
+    )].map((match) => ({ textContent: match[1].trim() }));
+    return {
+      querySelectorAll: (selector) => {
+        if (selector === 'sitemap loc') return locsOf('sitemap');
+        if (selector === 'url loc') return locsOf('url');
+        throw new Error(`FakeDOMParser does not support the selector "${selector}"`);
+      },
+    };
+  }
 }
 
 // A virtual clock, plus timers that fire on the next turn of the event loop and
@@ -126,6 +145,7 @@ function runContentScript({ respond, requests, clock, storage, toRuntime }) {
     console: silentConsole(consoleErrors),
     URL,
     AbortController,
+    DOMParser: FakeDOMParser,
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
     fetch: async (url, init = {}) => {

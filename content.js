@@ -317,10 +317,13 @@ let rateLimitHits = 0;
 // caller waits out this window instead of hammering the endpoint in parallel.
 let sharedCooldownUntil = 0;
 
-// Stop flag for discovery (the sitemap scan), which runs inside this script. Set
-// by Stop and cleared when the next discovery starts. Nothing else may read it:
-// batch requests from the background worker use watchForStop() below.
-let scanStopped = false;
+// The discovery (the sitemap scan that builds the product list) running in this
+// tab, if any: { stopped }. One runs at a time: a request for another is refused
+// while this one is running, because two side by side double the request rate
+// to Home Depot. Stop marks it stopped. A stopped one no longer blocks a new
+// one, so a discovery that hangs can always be replaced, and each run reads its
+// own `stopped`, so starting a new one cannot set a stopped one going again.
+let activeDiscovery = null;
 
 // Number of Stop requests received so far.
 let stopRequestCount = 0;
@@ -328,7 +331,7 @@ let stopRequestCount = 0;
 // For a batch request from the background worker. Returns a function that says
 // whether a Stop has arrived since watchForStop() was called, so a Stop ends the
 // batches in flight when it arrives and nothing that starts afterwards. Batches
-// used to read scanStopped, which stays set: after any Stop, every later Resume,
+// used to read a flag that stayed set: after any Stop, every later Resume,
 // Quick Recheck and Penny Scan in this tab checked nothing until a reload.
 function watchForStop() {
   const countAtStart = stopRequestCount;
@@ -767,7 +770,8 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 15000) {
   }
 }
 
-async function fetchSitemapCategories() {
+// `isStopped()` says whether the discovery this is part of has been stopped.
+async function fetchSitemapCategories(isStopped) {
   const categories = new Map(); // navParam -> { label, depth }
   const visited = new Set();
 
@@ -827,7 +831,7 @@ async function fetchSitemapCategories() {
     const BATCH = 5;
 
     for (let i = 0; i < urls.length; i += BATCH) {
-      if (scanStopped) break;
+      if (isStopped()) break;
       const batch = urls.slice(i, i + BATCH);
 
       await Promise.all(batch.map(async (url) => {
@@ -933,7 +937,8 @@ query searchModel($storeId: String, $navParam: String, $storefilter: StoreFilter
 // BFS walk of the category tree via searchModel dimensions.
 // Seeds come from sitemaps; each seed is expanded by querying its
 // "Category" dimension for subcategories with in-store products.
-async function discoverCategoriesByStore(seedNavParams, storeId) {
+// `isStopped()` says whether the discovery this is part of has been stopped.
+async function discoverCategoriesByStore(seedNavParams, storeId, isStopped) {
   const allCategories = new Map(); // navParam -> { label, recordCount }
   const explored = new Set();
   const queue = [...seedNavParams];
@@ -948,7 +953,7 @@ async function discoverCategoriesByStore(seedNavParams, storeId) {
     }
   }
 
-  while (queue.length > 0 && !scanStopped) {
+  while (queue.length > 0 && !isStopped()) {
     const batch = queue.splice(0, PARALLEL);
 
     const results = await Promise.all(batch.map(async (navParam) => {
@@ -1114,9 +1119,24 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
   // SITEMAP SCAN - discovers categories from HD's XML sitemaps (~5000+)
   // then scans each for in-store products. Catches items the hardcoded list misses.
   if (request.action === 'getStoreSkusSitemap') {
-    scanStopped = false;
+    // One discovery at a time: a second request while one is running is refused,
+    // not run alongside it.
+    if (activeDiscovery && !activeDiscovery.stopped) {
+      sendResponse({ busy: 'discovery' });
+      return true;
+    }
+    const discovery = { stopped: false };
+    activeDiscovery = discovery;
+    const isStopped = () => discovery.stopped;
     rateLimitedCategoryCount = 0;
     (async () => {
+      // One scan at a time: not while the background worker is checking prices.
+      const workerScan = await chrome.runtime.sendMessage({ action: 'getScanState' }).catch(() => null);
+      if (workerScan?.running) {
+        sendResponse({ busy: 'scan' });
+        return;
+      }
+
       const { storeId } = request;
       const allSkus = new Set();
       const scanResults = {};
@@ -1137,7 +1157,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         skuCount: allSkus.size, category: 'Discovering categories from sitemaps...'
       }).catch(() => {});
 
-      const sitemapCategories = await fetchSitemapCategories();
+      const sitemapCategories = await fetchSitemapCategories(isStopped);
       const sitemapCount = sitemapCategories.size;
       console.log(`[HD Scanner] Sitemap seeds: ${sitemapCount} categories`);
 
@@ -1148,7 +1168,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       }).catch(() => {});
 
       const seedNavParams = [...sitemapCategories.keys()];
-      const allCategories = await discoverCategoriesByStore(seedNavParams, storeId);
+      const allCategories = await discoverCategoriesByStore(seedNavParams, storeId, isStopped);
 
       // Merge any sitemap categories that the API didn't return
       for (const [np, info] of sitemapCategories) {
@@ -1167,11 +1187,11 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
 
       // Step 2: Scan categories in parallel batches
       for (let i = 0; i < categoryEntries.length; i += PARALLEL_CATEGORIES) {
-        if (scanStopped) break;
+        if (isStopped()) break;
 
         const batch = categoryEntries.slice(i, i + PARALLEL_CATEGORIES);
         const batchPromises = batch.map(async ([navParam, info]) => {
-          if (scanStopped) return { navParam, label: info.label, skus: [] };
+          if (isStopped()) return { navParam, label: info.label, skus: [] };
           const skus = await getStoreSkusByNavParam(navParam, storeId);
           return { navParam, label: info.label, skus };
         });
@@ -1235,7 +1255,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       // is always alive and can receive this message even when the popup isn't.
       // Callers that manage their own scan state (e.g. Telegram flow) pass
       // skipAutoStart: true so this handler just returns the SKUs.
-      if (!scanStopped && allSkus.size > 0 && !request.skipAutoStart) {
+      if (!isStopped() && allSkus.size > 0 && !request.skipAutoStart) {
         chrome.runtime.sendMessage({
           action: 'startBackgroundScan',
           skus: Array.from(allSkus),
@@ -1261,7 +1281,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         .filter(([_, r]) => r.total >= 720 && r.navParam);
 
       let overflowNewCount = 0;
-      if (cappedCategories.length > 0 && !scanStopped) {
+      if (cappedCategories.length > 0 && !isStopped()) {
         console.log(`[HD Scanner] ${cappedCategories.length} categories hit 720 cap, re-scanning with alternate sorts...`);
         chrome.runtime.sendMessage({
           type: 'skuProgress', phase: 'overflow', current: categoriesScanned, total: totalCats,
@@ -1272,10 +1292,10 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         let overflowScanned = 0;
         // scanResults is now keyed by navParam; the label lives on the value object.
         for (const [navParam, result] of cappedCategories) {
-          if (scanStopped) break;
+          if (isStopped()) break;
           overflowScanned++;
           for (const sortOrder of SORT_ORDERS.slice(1)) { // skip TOP_SELLERS (already done)
-            if (scanStopped) break;
+            if (isStopped()) break;
             const skus = await getStoreSkusByNavParam(result.navParam, storeId, sortOrder);
             const newSkus = skus.filter(s => !allSkus.has(s));
             skus.forEach(s => allSkus.add(s));
@@ -1306,7 +1326,7 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
       SKU_INVENTORY.addSkus(Array.from(allSkus), storeId);
       await SKU_INVENTORY.save();
 
-      const status = scanStopped ? 'STOPPED' : 'COMPLETE';
+      const status = isStopped() ? 'STOPPED' : 'COMPLETE';
       console.log(`[HD Scanner] SITEMAP SCAN ${status}: ${allSkus.size} unique SKUs from ${categoriesScanned} categories (${categoriesWithProducts} had products, ${newlyDiscovered} new SKUs, ${rateLimitedCategoryCount} rate-limited/errored)`);
 
       sendResponse({
@@ -1320,19 +1340,21 @@ chrome.runtime.onMessage.addListener((request, sender, sendResponse) => {
         sitemapOnly: sitemapOnlyCount,
         mode: 'sitemap',
         breakdown: scanResults,
-        stopped: scanStopped,
+        stopped: isStopped(),
         cappedCategories: cappedCategories.length,
         overflowSkus: overflowNewCount,
         rateLimitedCategories: rateLimitedCategoryCount
       });
-    })();
+    })().finally(() => {
+      if (activeDiscovery === discovery) activeDiscovery = null;
+    });
     return true;
   }
 
   // Stop any scan (general stop handler)
   if (request.action === 'stopScan' || request.action === 'stopSitemapScan') {
-    scanStopped = true;   // ends a discovery in progress
-    stopRequestCount++;   // ends the batch requests in flight (see watchForStop)
+    if (activeDiscovery) activeDiscovery.stopped = true;  // ends the discovery in progress
+    stopRequestCount++;  // ends the batch requests in flight (see watchForStop)
     console.log('[HD Scanner] Stop requested - stopping all scans');
     sendResponse({ ok: true });
     return true;
@@ -2059,6 +2081,8 @@ query storeSearch($lat: String, $lng: String, $storeSearchInput: String, $pagesi
       const storeCount = Object.keys(SKU_INVENTORY.stores).length;
       sendResponse({
         status: 'ok',
+        // True while a full scan is building its product list in this tab.
+        discovering: !!activeDiscovery && !activeDiscovery.stopped,
         cache: {
           total: allStoresTotal,
           storeCount: storeCount,
