@@ -12,6 +12,13 @@ const API_URL = "https://apionline.homedepot.com/federation-gateway/graphql";
 // should evaluate to true for this SKU whenever the tag is still live at the store.
 const YELLOW_TAG_CANARY = '206005261';
 
+// True for application/json and any +json structured-syntax suffix type
+// (RFC 6839), e.g. the application/graphql-response+json HD's gateway now sends.
+// Keep in sync with isJsonContentType in content.js.
+function isJsonContentType(contentType) {
+  return /^application\/(?:[\w.-]+\+)?json\s*(?:;|$)/i.test((contentType || '').trim());
+}
+
 const PRODUCT_QUERY = `
 query productClientOnlyProduct($itemId: String!, $storeId: String!) {
   product(itemId: $itemId) {
@@ -312,9 +319,11 @@ async function testApiConnection() {
       showConnectionResult('banner warn', `<strong>&#9888; Rate limited (403)</strong><br>Home Depot is blocking requests. Wait a few minutes before scanning again.<br>${meta}`);
     } else if (response.status === 429) {
       showConnectionResult('banner warn', `<strong>&#9888; Too many requests (429)</strong><br>You've hit the request limit. Wait 5-10 minutes.<br>${meta}`);
+    } else if (response.status === 206) {
+      showConnectionResult('banner warn', `<strong>&#9888; Throttled (206)</strong><br>Home Depot is answering with empty "Generic Errors" responses. Wait a while (15 min to a few hours) before scanning again.<br>${meta}`);
     } else if (response.ok) {
       const contentType = response.headers.get('content-type');
-      if (contentType && contentType.includes('application/json')) {
+      if (isJsonContentType(contentType)) {
         const data = await response.json();
         if (data?.data?.product) {
           showConnectionResult('banner ok', `<strong>&#10003; API is working</strong><br>Got a valid response. You're good to scan.<br>${meta}`);
