@@ -810,3 +810,144 @@ test('Stop from Telegram ends the bot\'s own full scan while it builds the produ
     'the products found so far are saved'
   );
 });
+
+// ---------------------------------------------------------------------------
+// What the bot says when its scan ends before any price is checked
+//
+// The worker asks the tab for the product list. A tab that is closed, reloaded
+// or sent to another page never answers. The bot used to take that for an
+// empty product list and say "Cache may be empty — run a full scan first",
+// even when a full scan was what it had been running. It said the same when a
+// full scan ran to its end and found nothing.
+// ---------------------------------------------------------------------------
+
+// The bot's messages that report a problem: the ones that open with a warning sign.
+const botWarnings = (ext) => ext.telegram.messages().filter((message) => message.text.startsWith('⚠'));
+
+// Tap a scan button, wait for the bot to say the scan could not go ahead, and
+// return that message.
+async function scanFromTelegramThatFails(ext, button) {
+  ext.telegram.tap(button);
+  await until(() => botWarnings(ext).length === 1, 'the bot to report what happened to the scan');
+  return botWarnings(ext)[0];
+}
+
+const botAnnouncesScan = (call) => /Starting scan/.test(call.body?.text || '');
+
+test('the bot reports an interrupted scan when the tab goes to another page mid-list, and Scan again then works', async () => {
+  const store = scriptedStore();
+  const ext = loadExtension({
+    telegram: true,
+    respond: (request) => {
+      // The tab goes to another Home Depot page as the fourth department's
+      // product list is requested.
+      if (isProductListRequest(request) && request.payload.variables.navParam === store.navParams[3]) {
+        leaveOnce();
+      }
+      return store.respond(request);
+    },
+  });
+  const leaveOnce = onFirst(() => true, () => ext.tabs.goTo('https://www.homedepot.com/c/deals'));
+
+  const warning = await scanFromTelegramThatFails(ext, `scan:${STORE}`);
+
+  assert.match(warning.text, /SCAN INTERRUPTED/);
+  assert.match(warning.text, /tab stopped answering while the product list was being built/);
+  assert.doesNotMatch(warning.text, /Cache may be empty/);
+  assert.equal(ext.storage.scanState, undefined, 'no price check was started');
+  assert.deepEqual(warning.buttons, [`scan:${STORE}`, 'menu:main']);
+
+  // The tab is on a Home Depot page again, so Scan again runs the whole scan.
+  ext.telegram.tap(warning.buttons[0]);
+  await until(() => completions(ext).length === 1, 'the second full scan to finish');
+  await ext.idle();
+  assert.equal(ext.storage.scanState.scanType, 'telegram_full');
+  assert.equal(ext.storage.scanState.checked, store.productCount);
+  assert.equal(botWarnings(ext).length, 1, 'the second scan reported no problem');
+});
+
+test('the bot reports an interrupted scan when the tab is closed mid-list, and Scan again then asks for a tab', async () => {
+  const store = scriptedStore();
+  const ext = loadExtension({
+    telegram: true,
+    respond: (request) => {
+      // The tab is closed as the first department's product list is requested.
+      if (isProductListRequest(request)) closeOnce();
+      return store.respond(request);
+    },
+  });
+  const closeOnce = onFirst(() => true, () => ext.tabs.close());
+
+  const warning = await scanFromTelegramThatFails(ext, `scan:${STORE}`);
+
+  assert.match(warning.text, /SCAN INTERRUPTED/);
+  assert.doesNotMatch(warning.text, /Cache may be empty/);
+  assert.equal(ext.storage.scanState, undefined, 'no price check was started');
+
+  ext.telegram.tap(warning.buttons[0]);
+  await until(() => botWarnings(ext).length === 2, 'the bot to answer Scan again');
+  assert.match(botWarnings(ext)[1].text, /No homedepot\.com tab open/);
+});
+
+test('the bot reports an interrupted scan when the tab goes away as a scan of the saved product list starts', async () => {
+  const ext = loadExtension({
+    telegram: true,
+    storage: savedProductList(skuList(WAVE)),
+    respond: scriptedStore().respond,
+    // The tab is closed just as the bot announces the scan: after the worker
+    // found the tab, before it asked the tab for the saved product list.
+    onTelegramCall: onFirst(botAnnouncesScan, () => ext.tabs.close()),
+  });
+
+  const warning = await scanFromTelegramThatFails(ext, `cachedscan:${STORE}`);
+
+  assert.match(warning.text, /SCAN INTERRUPTED/);
+  assert.match(warning.text, /tab stopped answering while the saved product list was being read/);
+  assert.doesNotMatch(warning.text, /Cache may be empty/);
+  assert.deepEqual(warning.buttons, [`cachedscan:${STORE}`, 'menu:main']);
+  assert.equal(ext.storage.scanState, undefined, 'no price check was started');
+});
+
+test('a full scan from Telegram that finds no products says so, and does not blame the cache', async () => {
+  const store = scriptedStore({ departmentSizes: [0, 0, 0] });
+  const ext = loadExtension({ telegram: true, respond: store.respond });
+
+  const warning = await scanFromTelegramThatFails(ext, `scan:${STORE}`);
+
+  assert.match(warning.text, /full scan finished and found no products for this store\. Categories checked: 3\./);
+  assert.doesNotMatch(warning.text, /Cache may be empty/);
+  assert.equal(ext.storage.scanState, undefined, 'no price check was started');
+});
+
+test('a scan of the saved product list still says the cache may be empty when nothing is saved', async () => {
+  const ext = loadExtension({ telegram: true, respond: scriptedStore().respond });
+
+  const warning = await scanFromTelegramThatFails(ext, `cachedscan:${STORE}`);
+
+  assert.match(warning.text, /Cache may be empty — run a full scan first/);
+  assert.equal(ext.storage.scanState, undefined, 'no price check was started');
+});
+
+test('a full scan from Telegram that a popup scan beats to the tab is told a scan is already running', async () => {
+  const store = scriptedStore();
+  let popupScan;
+  const ext = loadExtension({
+    telegram: true,
+    respond: store.respond,
+    // A full scan starts from the popup just as the bot announces its own:
+    // after the bot checked that nothing was running, before it reached the tab.
+    onTelegramCall: onFirst(botAnnouncesScan, () => { popupScan = ext.popup.toTab(fullScan); }),
+  });
+
+  const warning = await scanFromTelegramThatFails(ext, `scan:${STORE}`);
+  await until(() => completions(ext).length === 1, 'the popup\'s full scan to finish');
+  await ext.idle();
+
+  assert.match(warning.text, /a scan is already running/);
+  assert.equal((await popupScan).total, store.productCount, 'the popup\'s scan built its product list');
+  assert.equal(ext.storage.scanState.scanType, 'sitemap', 'the scan that ran is the popup\'s');
+  assert.equal(
+    ext.requests.filter((request) => request.url === SITEMAP_URL).length, 1,
+    'only one product list was built'
+  );
+});

@@ -1772,40 +1772,45 @@ async function telegramHandleScanTrigger(chatId, storeId, useCached) {
 // The second half of a scan started from Telegram: get the product list, from
 // the cache or by having the tab build it, then start the price check.
 async function telegramLoadSkusThenScan(chatId, tabId, storeId, storeName, useCached, progressMessageId) {
-  // Discover or load SKUs
-  let skus = [];
-  let discoveryError = null;
-  let discoveryStopped = false;
+  // Ask the tab for the product list: the saved one, or one it builds now.
+  let answer = null;
   try {
-    if (useCached) {
-      const cacheResp = await new Promise((resolve) => {
-        chrome.tabs.sendMessage(tabId, { action: 'getCachedSkus', storeId }, (resp) => {
-          if (chrome.runtime.lastError) resolve({ skus: [] });
-          else resolve(resp || { skus: [] });
-        });
+    answer = await sendToTab(tabId, useCached
+      ? { action: 'getCachedSkus', storeId }
+      : {
+        action: 'getStoreSkusSitemap',
+        storeId,
+        skipAutoStart: true  // Telegram manages its own scan start below
       });
-      skus = (cacheResp && cacheResp.skus) || [];
-    } else {
-      const discoverResp = await new Promise((resolve) => {
-        chrome.tabs.sendMessage(tabId, {
-          action: 'getStoreSkusSitemap',
-          storeId,
-          skipAutoStart: true  // Telegram manages its own scan start below
-        }, (resp) => {
-          if (chrome.runtime.lastError) resolve({ skus: [] });
-          else resolve(resp || { skus: [] });
-        });
-      });
-      skus = (discoverResp && discoverResp.skus) || [];
-      // The tab builds one product list at a time and refuses a second request.
-      if (discoverResp && discoverResp.busy) discoveryError = 'a scan is already running';
-      // Stopped while the list was being built: do not go on to check prices.
-      if (discoverResp && discoverResp.stopped) discoveryStopped = true;
-    }
   } catch (e) {
-    discoveryError = (e && e.message) || 'discovery failed';
+    console.warn('[Telegram] The Home Depot tab did not answer:', (e && e.message) || e);
   }
-  if (discoveryStopped) {
+
+  // No answer at all: the tab was closed, reloaded or sent to another page
+  // before it could reply. That is not an empty product list. It used to be
+  // taken for one and reported as "Cache may be empty", for a full scan too.
+  if (!answer) {
+    telegramProgressCtx = null;
+    await telegramSendOrEdit(
+      chatId,
+      progressMessageId,
+      `⚠️ <b>SCAN INTERRUPTED</b>\n` +
+      `📍 ${escapeTg(storeName)} (#${escapeTg(storeId)})\n` +
+      `The Home Depot tab stopped answering while ${useCached ? 'the saved product list was being read' : 'the product list was being built'}, so no prices were checked. ` +
+      `That happens when the tab is closed, reloaded or goes to another page.\n` +
+      `Start the scan again with a tab open on homedepot.com, and leave that tab there until the scan finishes.`,
+      {
+        inline_keyboard: [[
+          { text: '🔄 Scan again', callback_data: `${useCached ? 'cachedscan' : 'scan'}:${storeId}` },
+          { text: '« Menu', callback_data: 'menu:main' }
+        ]]
+      }
+    );
+    return;
+  }
+
+  // Stopped while the list was being built: do not go on to check prices.
+  if (answer.stopped) {
     telegramProgressCtx = null;
     await telegramSendOrEdit(
       chatId,
@@ -1815,12 +1820,25 @@ async function telegramLoadSkusThenScan(chatId, tabId, storeId, storeName, useCa
     );
     return;
   }
-  if (discoveryError || skus.length === 0) {
+
+  const skus = answer.skus || [];
+  if (answer.busy || skus.length === 0) {
+    let reason;
+    if (answer.busy) {
+      // The tab builds one product list at a time and refuses a second request.
+      reason = 'Error: a scan is already running';
+    } else if (useCached) {
+      reason = 'Cache may be empty — run a full scan first.';
+    } else {
+      // A full scan that ran to its end and found nothing. Telling the user to
+      // run a full scan first would send them round in a circle.
+      reason = `The full scan finished and found no products for this store. Categories checked: ${(Number(answer.categoriesScanned) || 0).toLocaleString()}.`;
+    }
     telegramProgressCtx = null;
     await telegramSendOrEdit(
       chatId,
       progressMessageId,
-      `⚠️ <b>No SKUs found for ${escapeTg(storeName)}</b>\n${discoveryError ? 'Error: ' + escapeTg(discoveryError) : 'Cache may be empty — run a full scan first.'}`,
+      `⚠️ <b>No SKUs found for ${escapeTg(storeName)}</b>\n${reason}`,
       { inline_keyboard: [[{ text: '« Menu', callback_data: 'menu:main' }]] }
     );
     return;
