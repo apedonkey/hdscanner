@@ -30,7 +30,8 @@ function copy(value) {
 }
 
 // What fetch() resolves to. `body` is what json() returns; leave it undefined to
-// simulate a body that is not valid JSON (an HTML block page, for example).
+// simulate a body that is not valid JSON (an HTML block page, for example). A
+// string body is what text() returns, as for a sitemap.
 function fakeResponse({ status = 200, contentType = 'application/json', body } = {}) {
   return {
     status,
@@ -42,7 +43,25 @@ function fakeResponse({ status = 200, contentType = 'application/json', body } =
       if (body === undefined) throw new SyntaxError('Unexpected token < in JSON at position 0');
       return structuredClone(body);
     },
+    text: async () => (typeof body === 'string' ? body : JSON.stringify(body ?? '')),
   };
+}
+
+// Stands in for the browser's DOMParser for the two lookups content.js makes on
+// a sitemap: the <loc> of every <sitemap> entry and of every <url> entry.
+class FakeDOMParser {
+  parseFromString(text) {
+    const locsOf = (tag) => [...String(text).matchAll(
+      new RegExp(`<${tag}>[\\s\\S]*?<loc>([\\s\\S]*?)</loc>[\\s\\S]*?</${tag}>`, 'g')
+    )].map((match) => ({ textContent: match[1].trim() }));
+    return {
+      querySelectorAll: (selector) => {
+        if (selector === 'sitemap loc') return locsOf('sitemap');
+        if (selector === 'url loc') return locsOf('url');
+        throw new Error(`FakeDOMParser does not support the selector "${selector}"`);
+      },
+    };
+  }
 }
 
 // A virtual clock, plus timers that fire on the next turn of the event loop and
@@ -114,30 +133,52 @@ function deliver(listener, message, sender = {}) {
   });
 }
 
-// Run content.js in a fresh VM context and return its message listener.
+// Run content.js in a fresh VM context, as one loaded Home Depot page does.
+// Returns { listener, unload }: the script's message listener, and a function
+// that ends the page the way closing its tab or leaving the page does. After
+// unload() the script never runs again: its requests, timers, storage calls
+// and messages never complete.
 //   respond(request, n)  answer for the n-th fetch: { status, contentType, body }
 //   requests             array every fetch is appended to: { url, payload }
 //   toRuntime(message)   what chrome.runtime.sendMessage does with a message
 function runContentScript({ respond, requests, clock, storage, toRuntime }) {
   const consoleErrors = [];
   let listener = null;
+  let unloaded = false;
+  const never = new Promise(() => {});
+  // Settles as `promise` does, but only while the page is still loaded.
+  const whileLoaded = (promise) => new Promise((resolve, reject) => {
+    promise.then(
+      (value) => { if (!unloaded) resolve(value); },
+      (error) => { if (!unloaded) reject(error); }
+    );
+  });
+  const storageCall = (name) => (...args) => (
+    unloaded ? never : whileLoaded(storage.api[name](...args))
+  );
 
   const sandbox = {
     console: silentConsole(consoleErrors),
     URL,
     AbortController,
-    setTimeout: clock.setTimeout,
+    DOMParser: FakeDOMParser,
+    setTimeout: (fn, ms) => clock.setTimeout(() => { if (!unloaded) fn(); }, ms),
     clearTimeout: clock.clearTimeout,
     fetch: async (url, init = {}) => {
+      if (unloaded) return never;
       const request = { url: String(url), payload: init.body ? JSON.parse(init.body) : null };
       requests.push(request);
-      return fakeResponse(respond(request, requests.length));
+      // respond() is where a test acts, and what it does may be to end this page.
+      const answer = respond(request, requests.length);
+      return unloaded ? never : fakeResponse(answer);
     },
     chrome: {
-      storage: { local: storage.api },
+      storage: {
+        local: { get: storageCall('get'), set: storageCall('set'), remove: storageCall('remove') },
+      },
       runtime: {
         onMessage: { addListener: (fn) => { listener = fn; } },
-        sendMessage: (message) => toRuntime(message),
+        sendMessage: (message) => (unloaded ? never : whileLoaded(toRuntime(message))),
       },
     },
     __virtualNow: clock.now,
@@ -152,7 +193,7 @@ function runContentScript({ respond, requests, clock, storage, toRuntime }) {
     // content.js wraps itself in try/catch and only logs a fatal load error.
     throw new Error(`content.js registered no message listener. ${consoleErrors[0] || ''}`);
   }
-  return listener;
+  return { listener, unload: () => { unloaded = true; } };
 }
 
 // Load content.js on its own and return a handle for talking to it.
@@ -164,7 +205,7 @@ function runContentScript({ respond, requests, clock, storage, toRuntime }) {
 function loadContentScript({ respond }) {
   const requests = [];
   const clock = createClock();
-  const listener = runContentScript({
+  const { listener } = runContentScript({
     respond,
     requests,
     clock,
@@ -198,22 +239,82 @@ function loadContentScript({ respond }) {
 //   respond(request, n)   answer for the tab's n-th fetch, as in loadContentScript
 //   storage               initial contents of chrome.storage.local
 //   onBroadcast(message)  called for each broadcast as it happens
+//   onTelegramCall(call)  called for each request the bot makes to Telegram,
+//                         before it is answered: { method, body }
+//   storeId               the store selected in the popup
+//   tabCount              how many Home Depot tabs are open (ids 1, 2, ...); each
+//                         runs its own content.js, and the popup is on tab 1
+//   telegram              true to connect a Telegram bot: its API calls are
+//                         recorded, and its long poll for commands is answered
+//                         by telegram.tap() and telegram.say()
 // The handle exposes:
-//   popup.toBackground(message), popup.toTab(message)   what the popup sends
-//   popup.pressStop()     runs popup.js's real stopScan()
+//   popup.toBackground(message), popup.toTab(message, tabId)   what a popup sends
+//   popup.clickFullScan(), popup.clickQuickRecheck(), popup.clickPennyScan(),
+//   popup.clickResume(), popup.pressStop()   run popup.js's real button handlers
+//   popup.open()          runs the check the popup makes first when it opens
 //   popup.status          every status line the popup would have shown, in order
+//   popup.errors          every error banner it would have shown
+//   popup.view.scanning   whether it is showing its scanning view
+//   telegram.startScan({ cached }), telegram.startPennyScan(), telegram.pressStop(),
+//   telegram.showStatus() run background.js's real handlers for those bot commands
+//   telegram.tap(data), telegram.say(text)   send the bot a command through its
+//                         real long poll: a button tap or a text message
+//   telegram.messages()   every message the bot has sent or edited in:
+//                         { text, buttons }, buttons being what each sends back
+//   telegram.texts()      the texts of those messages
+//   tabs.close(tabId), tabs.goTo(url, tabId)   close a tab, or send it to another
+//                         page; either ends the content.js running in it, and
+//                         whatever is waiting for its answer is told it is gone
 //   idle()                resolves once the worker's scan loop has ended
 //   requests, broadcasts, waits
 //   storage               live contents of chrome.storage.local
-function loadExtension({ respond, storage: initialStorage = {}, onBroadcast = () => {} }) {
+function loadExtension({
+  respond,
+  storage: initialStorage = {},
+  onBroadcast = () => {},
+  onTelegramCall = () => {},
+  storeId = '2580',
+  tabCount = 1,
+  telegram = false,
+}) {
   const requests = [];
   const broadcasts = [];
   const backgroundErrors = [];
   const clock = createClock();
   const storage = createStorageArea(initialStorage);
-  const hdTab = { id: 1, windowId: 1, active: true, url: 'https://www.homedepot.com/' };
+  const openTabs = Array.from({ length: tabCount }, (_, i) => ({
+    id: i + 1,
+    windowId: 1,
+    active: i === 0,
+    url: 'https://www.homedepot.com/',
+  }));
+  // tab id -> the Home Depot page loaded in that tab: { listener, unload,
+  // unanswered }. A tab that is on another site has none.
+  const pages = new Map();
   let backgroundListener = null;
-  let contentListener = null;
+
+  const telegramChatId = 7;
+  const telegramCalls = [];
+  const telegramUpdates = []; // commands waiting for the bot's next long poll
+  const telegramPolls = []; // long polls waiting for a command
+  let telegramUpdateId = 1; // the cursor seeded below
+  const deliverTelegramUpdates = () => {
+    if (telegramPolls.length === 0 || telegramUpdates.length === 0) return;
+    const answerPoll = telegramPolls.shift();
+    answerPoll(fakeResponse({ body: { ok: true, result: telegramUpdates.splice(0) } }));
+  };
+  const receiveTelegramUpdate = (update) => {
+    telegramUpdateId += 1;
+    telegramUpdates.push({ update_id: telegramUpdateId, ...update });
+    deliverTelegramUpdates();
+  };
+  if (telegram) {
+    storage.data.telegramConfig = {
+      botToken: '123456789:TEST-TOKEN-TEST-TOKEN-TEST-TOKEN',
+      chatId: telegramChatId,
+    };
+    storage.data.telegramLastUpdateId = 1;
+  }
 
   const broadcast = (message) => {
     const seen = copy(message);
@@ -221,26 +322,94 @@ function loadExtension({ respond, storage: initialStorage = {}, onBroadcast = ()
     onBroadcast(seen);
   };
   const toBackground = (message, sender = {}) => deliver(backgroundListener, message, sender);
-  const toTab = (message) => deliver(contentListener, message);
+  // What chrome.tabs.sendMessage does with a message for a tab: resolves with
+  // the answer of the Home Depot page loaded there, and rejects when the tab
+  // has no such page, or loses it before the page has answered.
+  const toTab = (message, tabId = 1) => new Promise((resolve, reject) => {
+    const page = pages.get(tabId);
+    if (!page) {
+      reject(new Error('Could not establish connection. Receiving end does not exist.'));
+      return;
+    }
+    page.unanswered.add(reject);
+    deliver(page.listener, message).then((response) => {
+      page.unanswered.delete(reject);
+      resolve(response);
+    });
+  });
+
+  // Load a Home Depot page in a tab, and with it a fresh content.js.
+  function loadPage(tab) {
+    const page = runContentScript({
+      respond,
+      requests,
+      clock,
+      storage,
+      // From a tab, the worker handles the message and an open popup sees it too.
+      toRuntime: (message) => {
+        broadcast(message);
+        return toBackground(message, { tab: copy(tab) });
+      },
+    });
+    pages.set(tab.id, { ...page, unanswered: new Set() });
+  }
+
+  // End the page loaded in a tab, as closing the tab or leaving the page does.
+  // Its script stops for good, and whoever is still waiting for an answer from
+  // it is told the tab went away.
+  function unloadPage(tabId) {
+    const page = pages.get(tabId);
+    if (!page) return;
+    pages.delete(tabId);
+    page.unload();
+    for (const reject of page.unanswered) {
+      reject(new Error('The message port closed before a response was received.'));
+    }
+    page.unanswered.clear();
+  }
 
   const backgroundSandbox = {
     console: silentConsole(backgroundErrors),
     URL,
     setTimeout: clock.setTimeout,
     clearTimeout: clock.clearTimeout,
-    fetch: async (url) => {
-      throw new Error(`background.js made an unexpected request to ${url}`);
+    fetch: async (url, init = {}) => {
+      const telegramMethod = /^https:\/\/api\.telegram\.org\/bot[^/]+\/(\w+)$/.exec(String(url));
+      if (!telegram || !telegramMethod) {
+        throw new Error(`background.js made an unexpected request to ${url}`);
+      }
+      // The bot's long poll for commands: answered when a test sends one with
+      // telegram.tap() or telegram.say(), and left hanging until then.
+      if (telegramMethod[1] === 'getUpdates') {
+        return new Promise((resolve) => {
+          telegramPolls.push(resolve);
+          deliverTelegramUpdates();
+        });
+      }
+      const call = { method: telegramMethod[1], body: init.body ? JSON.parse(init.body) : null };
+      telegramCalls.push(call);
+      onTelegramCall(copy(call));
+      return fakeResponse({ body: { ok: true, result: { message_id: telegramCalls.length } } });
     },
     chrome: {
       storage: { local: storage.api, onChanged: { addListener() {} } },
       alarms: { create() {}, clear() {}, onAlarm: { addListener() {} } },
       tabs: {
-        query: async () => [copy(hdTab)],
-        // background.js uses both the callback form and the promise form.
-        sendMessage: (_tabId, message, callback) => {
-          const answer = toTab(message);
+        query: async () => copy(openTabs),
+        // background.js uses both the callback form and the promise form. A
+        // tab that does not answer rejects the promise; the callback form is
+        // told through chrome.runtime.lastError, set only while the callback runs.
+        sendMessage: (tabId, message, callback) => {
+          const answer = toTab(message, tabId);
           if (typeof callback !== 'function') return answer;
-          answer.then(callback);
+          answer.then(callback, (error) => {
+            backgroundSandbox.chrome.runtime.lastError = { message: error.message };
+            try {
+              callback();
+            } finally {
+              backgroundSandbox.chrome.runtime.lastError = undefined;
+            }
+          });
           return undefined;
         },
       },
@@ -263,33 +432,107 @@ function loadExtension({ respond, storage: initialStorage = {}, onBroadcast = ()
   vm.runInContext(readSource('background.js'), backgroundSandbox, { filename: 'background.js' });
   if (!backgroundListener) throw new Error('background.js registered no message listener');
 
-  contentListener = runContentScript({
-    respond,
-    requests,
-    clock,
-    storage,
-    // From the tab, the worker handles the message and an open popup sees it too.
-    toRuntime: (message) => {
-      broadcast(message);
-      return toBackground(message, { tab: copy(hdTab) });
+  for (const tab of openTabs) loadPage(tab);
+
+  // popup.js's real handlers for the scan buttons, Resume and Stop, with the
+  // popup's own plumbing (its page elements, status line and views) replaced by
+  // recorders.
+  const popupStatus = [];
+  const popupErrors = [];
+  const popupView = { scanning: false };
+  const popupElements = { storeId: { value: storeId, style: {} } };
+  const popupSource = readSource('popup.js');
+  const popupSandbox = vm.createContext({
+    console: silentConsole([]),
+    setTimeout: clock.setTimeout,
+    $: (id) => popupElements[id] || (popupElements[id] = { value: '', style: {} }),
+    setStatus: (text) => { popupStatus.push(text); },
+    showError: (text) => { popupErrors.push(text); },
+    hideError() {},
+    setScanningUI: (isScanning) => { popupView.scanning = isScanning; },
+    setProgress() {},
+    setOverflowStatus() {},
+    formatCacheAge: () => '',
+    checkForInterruptedScan() {},
+    checkConnection: async () => true,
+    sendToContentScript: (message) => toTab(message),
+    chrome: {
+      storage: { local: storage.api },
+      runtime: { sendMessage: (message) => toBackground(message) },
+      tabs: {
+        query: async () => copy(openTabs),
+        sendMessage: (tabId, message) => toTab(message, tabId),
+      },
     },
   });
-
-  // popup.js's real Stop handler, with the popup's own plumbing replaced.
-  const popupStatus = [];
-  const popupSandbox = vm.createContext({
-    setStatus: (text) => { popupStatus.push(text); },
-    setScanningUI() {},
-    checkForInterruptedScan() {},
-    sendToContentScript: (message) => toTab(message),
-    chrome: { runtime: { sendMessage: (message) => toBackground(message) } },
-  });
   vm.runInContext(
-    topLevelFunctionSource(readSource('popup.js'), 'stopScan', 'popup.js'),
+    [
+      // State the handlers assign to; popup.js declares these at its top.
+      'var currentScanType = null, clearanceItems = [], stats = {};',
+      sliceBetweenMarkers(popupSource, '>>> one-scan-at-a-time', '<<< one-scan-at-a-time', 'popup.js'),
+      ...['startSitemapScan', 'startCheckSkusOnly', 'startPennyScan', 'stopScan']
+        .map((name) => topLevelFunctionSource(popupSource, name, 'popup.js')),
+    ].join('\n'),
     popupSandbox,
-    { filename: 'popup.js (stopScan)' }
+    { filename: 'popup.js (scan buttons)' }
   );
-  const pressStop = () => { vm.runInContext('stopScan()', popupSandbox); };
+  const inPopup = (call) => vm.runInContext(call, popupSandbox);
+
+  // background.js's real handlers for the bot's commands, called as its update
+  // dispatcher calls them: only once the bot's settings have been loaded.
+  const botCommand = (call) => vm.runInContext(
+    `telegramConfigReady.then(() => ${call})`, backgroundSandbox
+  );
+  const telegramHandle = {
+    startScan: ({ cached }) => botCommand(
+      `telegramHandleScanTrigger(${telegramChatId}, ${JSON.stringify(storeId)}, ${cached ? 'true' : 'false'})`
+    ),
+    startPennyScan: () => botCommand(
+      `telegramHandlePennyScanTrigger(${telegramChatId}, ${JSON.stringify(storeId)})`
+    ),
+    pressStop: () => botCommand(`telegramHandleStop(${telegramChatId})`),
+    showStatus: () => botCommand(`telegramHandleStatus(${telegramChatId}, null)`),
+    // Send the bot a command through its real long poll, as Telegram does: a tap
+    // on an inline button ('scan:2580', 'menu:stop'), or a text ('/status').
+    tap: (data) => receiveTelegramUpdate({
+      callback_query: {
+        id: `tap-${telegramUpdateId}`,
+        data,
+        message: { chat: { id: telegramChatId }, message_id: 1 },
+      },
+    }),
+    say: (text) => receiveTelegramUpdate({ message: { chat: { id: telegramChatId }, text } }),
+    // Every message the bot has sent or edited in: its text, and what each of
+    // its buttons sends back when tapped.
+    messages: () => telegramCalls
+      .filter((call) => call.body && typeof call.body.text === 'string')
+      .map((call) => ({
+        text: call.body.text,
+        buttons: (call.body.reply_markup?.inline_keyboard || [])
+          .flat()
+          .map((button) => button.callback_data),
+      })),
+    texts: () => telegramHandle.messages().map((message) => message.text),
+  };
+
+  // What can happen to a Home Depot tab while a scan runs.
+  const tabsHandle = {
+    close: (tabId = 1) => {
+      const at = openTabs.findIndex((tab) => tab.id === tabId);
+      if (at < 0) throw new Error(`there is no tab ${tabId} to close`);
+      unloadPage(tabId);
+      openTabs.splice(at, 1);
+    },
+    // A homedepot.com address loads a fresh content.js, as the manifest's
+    // content_scripts entry does; any other address leaves the tab without one.
+    goTo: (url, tabId = 1) => {
+      const tab = openTabs.find((candidate) => candidate.id === tabId);
+      if (!tab) throw new Error(`there is no tab ${tabId} to send to ${url}`);
+      unloadPage(tabId);
+      tab.url = url;
+      if (/^https:\/\/(www\.)?homedepot\.com\//.test(url)) loadPage(tab);
+    },
+  };
 
   // Resolves once the worker's scan loop has ended, whether the scan finished
   // or was stopped.
@@ -306,7 +549,21 @@ function loadExtension({ respond, storage: initialStorage = {}, onBroadcast = ()
   }
 
   return {
-    popup: { toBackground, toTab, pressStop, status: popupStatus },
+    popup: {
+      toBackground,
+      toTab,
+      clickFullScan: () => inPopup('startSitemapScan()'),
+      clickQuickRecheck: () => inPopup('startCheckSkusOnly()'),
+      clickPennyScan: () => inPopup('startPennyScan()'),
+      clickResume: () => inPopup('resumeInterruptedScan()'),
+      pressStop: () => { inPopup('stopScan()'); },
+      open: () => inPopup('showRunningScanEarly()'),
+      status: popupStatus,
+      errors: popupErrors,
+      view: popupView,
+    },
+    telegram: telegramHandle,
+    tabs: tabsHandle,
     idle,
     requests,
     broadcasts,

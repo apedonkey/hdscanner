@@ -726,6 +726,13 @@ function selectStore(store) {
     savedStores: STORE_NAMES
   });
 
+  // Keep the store's name and town for every store picked, not only the current
+  // one: store-force.js needs them to open an older result on its own store.
+  // The bot keeps the same record when a store is picked from Telegram.
+  chrome.storage.local.get(['savedStoreDetails']).then(({ savedStoreDetails }) =>
+    chrome.storage.local.set({ savedStoreDetails: { ...(savedStoreDetails || {}), [store.storeId]: store } })
+  ).catch(e => console.warn('[Popup] Could not save store details:', (e && e.message) || e));
+
   showSelectedStore(store);
   $('storeResults').style.display = 'none';
   populateFilterStores();
@@ -777,23 +784,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   await loadSavedStores();
 
   // Resume/Discard buttons
-  $('resumeBtn').addEventListener('click', async () => {
-    $('resumeBanner').style.display = 'none';
-    setScanningUI(true);
-
-    try {
-      const response = await chrome.runtime.sendMessage({ action: 'resumeScan' });
-      if (response?.resumed) {
-        setStatus(`Resuming scan from ${response.from.toLocaleString()}…`);
-      } else {
-        setStatus('Nothing to resume' + (response?.reason ? `: ${response.reason}` : '.'));
-        setScanningUI(false);
-      }
-    } catch (e) {
-      setStatus('Could not resume: ' + e.message);
-      setScanningUI(false);
-    }
-  });
+  $('resumeBtn').addEventListener('click', resumeInterruptedScan);
 
   $('discardBtn').addEventListener('click', () => {
     // scanState/scanSkus are background.js's resume data — removing them here
@@ -839,6 +830,11 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Check connection FIRST (injects content script)
   await checkConnection();
 
+  // Show a scan that is already running straight away. The steps below reload
+  // the saved results and can take a second or two; until this check existed,
+  // the popup looked ready to scan for that long.
+  const runningAtOpen = await showRunningScanEarly();
+
   // Restore last scan's results
   await loadSavedState();
 
@@ -846,7 +842,9 @@ document.addEventListener('DOMContentLoaded', async () => {
   const bgRunning = await checkBackgroundScan();
 
   // If no running scan, check for interrupted scan that can be resumed
-  if (!bgRunning) {
+  if (!bgRunning && runningAtOpen !== 'discovery') {
+    // A price check that the early check above saw may have ended since.
+    if (runningAtOpen) setScanningUI(false);
     await checkForInterruptedScan();
   }
 
@@ -1105,6 +1103,103 @@ async function sendToContentScript(message, retries = 3) {
   }
 }
 
+// ==================== ONE SCAN AT A TIME ====================
+
+// >>> one-scan-at-a-time
+// The tab and the background worker each refuse a second scan. The popup also
+// asks what is running at the moment it is about to start one, because it needs
+// a moment after opening before it shows a running scan, and its scan buttons
+// are live in that moment.
+const SCAN_ALREADY_RUNNING = 'A scan is already running. Press Stop first if you want to start a different one.';
+
+// How long to wait for a tab to answer a ping. A background tab that Chrome has
+// frozen may not answer at all, and that must not hold up a click.
+const PING_TIMEOUT_MS = 1500;
+
+// Resolves with `fallback` if `promise` has not settled within `ms`.
+function withTimeout(promise, ms, fallback) {
+  return Promise.race([
+    promise,
+    new Promise((resolve) => setTimeout(() => resolve(fallback), ms))
+  ]);
+}
+
+// What is running right now: 'discovery' (a full scan is building its product
+// list in a Home Depot tab), 'scan' (the background worker is checking prices),
+// or null. Asked fresh every time; nothing is remembered between calls.
+async function findRunningScan() {
+  try {
+    const tabs = (await chrome.tabs.query({})).filter((tab) => (tab.url || '').includes('homedepot.com'));
+    const pongs = await Promise.all(tabs.map((tab) => withTimeout(
+      // The ping is rejected when a tab has no content script: nothing runs there.
+      chrome.tabs.sendMessage(tab.id, { action: 'ping' }).catch(() => null),
+      PING_TIMEOUT_MS,
+      null
+    )));
+    if (pongs.some((pong) => pong?.discovering)) return 'discovery';
+  } catch (e) {
+    console.log('[Popup] Could not look for a running scan in the tabs:', e.message);
+  }
+  try {
+    const state = await chrome.runtime.sendMessage({ action: 'getScanState' });
+    if (state?.running) return 'scan';
+  } catch (e) {
+    console.log('[Popup] Could not ask the background worker for its scan state:', e.message);
+  }
+  return null;
+}
+
+// For everything that starts a scan. Returns true, with the popup switched to
+// its scanning view, when a scan is already running and nothing should start.
+async function refuseIfScanRunning() {
+  if (!(await findRunningScan())) return false;
+  setScanningUI(true);
+  setStatus(SCAN_ALREADY_RUNNING);
+  return true;
+}
+
+// A scan the popup asked for was refused by the tab or the worker, because
+// another one got in first. Show that scan if it is still running; otherwise
+// go back to the idle view.
+async function showRefusedScan() {
+  if (await refuseIfScanRunning()) return;
+  setScanningUI(false);
+  setStatus('That scan did not start because another one was just finishing. Try again.');
+}
+
+// When the popup opens: show a running scan at once. The rest of start-up
+// reloads the saved results, which can take a second or two. Returns what is
+// running, as findRunningScan() does.
+async function showRunningScanEarly() {
+  const running = await findRunningScan();
+  if (running) {
+    setScanningUI(true);
+    setStatus(running === 'discovery' ? 'Scan running: building the product list…' : 'Scan running…');
+  }
+  return running;
+}
+
+// Resume the paused scan shown in the banner.
+async function resumeInterruptedScan() {
+  if (await refuseIfScanRunning()) return;
+  $('resumeBanner').style.display = 'none';
+  setScanningUI(true);
+
+  try {
+    const response = await chrome.runtime.sendMessage({ action: 'resumeScan' });
+    if (response?.resumed) {
+      setStatus(`Resuming scan from ${response.from.toLocaleString()}…`);
+    } else {
+      setStatus('Nothing to resume' + (response?.reason ? `: ${response.reason}` : '.'));
+      setScanningUI(false);
+    }
+  } catch (e) {
+    setStatus('Could not resume: ' + e.message);
+    setScanningUI(false);
+  }
+}
+// <<< one-scan-at-a-time
+
 // ==================== FULL SCAN (discovery + price check) ====================
 
 async function startSitemapScan() {
@@ -1116,6 +1211,7 @@ async function startSitemapScan() {
 
   const connected = await checkConnection();
   if (!connected) return;
+  if (await refuseIfScanRunning()) return;
 
   chrome.storage.local.set({ storeId });
 
@@ -1133,6 +1229,10 @@ async function startSitemapScan() {
   sendToContentScript({
     action: 'getStoreSkusSitemap',
     storeId: storeId
+  }).then((response) => {
+    // The tab builds one product list at a time. `busy` means it refused this
+    // request; any other answer is the finished list, which is not needed here.
+    if (response?.busy) showRefusedScan();
   }).catch(e => {
     console.log('[Popup] Sitemap scan channel closed:', e.message);
   });
@@ -1149,6 +1249,7 @@ async function startCheckSkusOnly() {
 
   const connected = await checkConnection();
   if (!connected) return;
+  if (await refuseIfScanRunning()) return;
 
   setStatus('Loading your saved product list…');
   const stored = await chrome.storage.local.get(['skuInventoryMultiStore']);
@@ -1173,12 +1274,17 @@ async function startCheckSkusOnly() {
   setProgress(5);
 
   try {
-    await chrome.runtime.sendMessage({
+    const response = await chrome.runtime.sendMessage({
       action: 'startBackgroundScan',
       skus: skus,
       storeId: storeId,
       scanType: 'skuCheckOnly'
     });
+    // The worker runs one scan at a time and refuses a second one.
+    if (response?.started === false) {
+      await showRefusedScan();
+      return;
+    }
 
     setStatus('Recheck running in the background — you can close this popup.');
   } catch (e) {
@@ -1199,6 +1305,7 @@ async function startPennyScan() {
 
   const connected = await checkConnection();
   if (!connected) return;
+  if (await refuseIfScanRunning()) return;
 
   setStatus('Loading your saved product list…');
   const stored = await chrome.storage.local.get(['skuInventoryMultiStore']);
@@ -1223,12 +1330,17 @@ async function startPennyScan() {
   setProgress(5);
 
   try {
-    await chrome.runtime.sendMessage({
+    const response = await chrome.runtime.sendMessage({
       action: 'startBackgroundScan',
       skus: skus,
       storeId: storeId,
       scanType: 'penny'
     });
+    // The worker runs one scan at a time and refuses a second one.
+    if (response?.started === false) {
+      await showRefusedScan();
+      return;
+    }
 
     setStatus('Penny scan running in the background — you can close this popup.');
   } catch (e) {
