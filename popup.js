@@ -326,6 +326,26 @@ function classifyApiTestResponse(status, body) {
 }
 // <<< api-test-verdict
 
+// The products Test API Connection asks for, in the order it tries them. Home
+// Depot retires products, and a single built-in one left the check unable to
+// confirm product data once it was gone (issue #6). So: up to two products
+// picked at random from this store's own saved product list, then built-in ones.
+// The first two built-in products were live on 2026-11-18.
+async function apiTestProducts(storeId) {
+  const builtIn = ['303115700', '319738646', '100375745'];
+  let own = [];
+  try {
+    const stored = await chrome.storage.local.get(['skuInventoryMultiStore']);
+    const saved = (stored.skuInventoryMultiStore?.[storeId]?.skus || []).map(String);
+    for (let pick = 0; pick < 2 && saved.length > 0; pick++) {
+      own.push(saved.splice(Math.floor(Math.random() * saved.length), 1)[0]);
+    }
+  } catch (_) {
+    own = []; // storage unavailable: the built-in products still work
+  }
+  return [...new Set([...own, ...builtIn])];
+}
+
 // Test API connection / rate limit status
 async function testApiConnection() {
   const btn = $('testConnectionBtn');
@@ -334,44 +354,53 @@ async function testApiConnection() {
   showConnectionResult('banner info', 'Contacting Home Depot’s API…');
 
   const storeId = $('storeId').value;
-  // Built-in test product. Home Depot retires products, so a "not found" answer
-  // is reported as exactly that (see classifyApiTestResponse), not as an API failure.
-  const testSku = '100375745';
-  const start = Date.now();
 
   try {
     const url = `${API_URL}?opname=productClientOnlyProduct`;
-    const response = await fetch(url, {
-      method: 'POST',
-      credentials: 'include',
-      headers: {
-        'Content-Type': 'application/json',
-        'x-experience-name': 'general-merchandise'
-      },
-      body: JSON.stringify({
-        operationName: 'productClientOnlyProduct',
-        variables: { itemId: testSku, storeId: storeId },
-        query: PRODUCT_QUERY
-      })
-    });
-
-    const elapsed = Date.now() - start;
-    const meta = `<span style="font-size:11px;">${elapsed}ms &middot; Store #${escapeHtml(storeId)}</span>`;
-
+    const testSkus = await apiTestProducts(storeId);
+    let status = 0;
     let body = null;
-    if (response.ok && isJsonContentType(response.headers.get('content-type'))) {
-      try {
-        body = await response.json();
-      } catch (_) {
-        body = null; // unreadable JSON is reported as a non-JSON response
+    let elapsed = 0;
+    let tried = 0;
+
+    // A "not found" answer says the product is gone, not that the API failed
+    // (see classifyApiTestResponse), so try the next product. Any other answer
+    // is the result.
+    for (const testSku of testSkus) {
+      const start = Date.now();
+      const response = await fetch(url, {
+        method: 'POST',
+        credentials: 'include',
+        headers: {
+          'Content-Type': 'application/json',
+          'x-experience-name': 'general-merchandise'
+        },
+        body: JSON.stringify({
+          operationName: 'productClientOnlyProduct',
+          variables: { itemId: testSku, storeId: storeId },
+          query: PRODUCT_QUERY
+        })
+      });
+      elapsed = Date.now() - start;
+      tried++;
+
+      body = null;
+      if (response.ok && isJsonContentType(response.headers.get('content-type'))) {
+        try {
+          body = await response.json();
+        } catch (_) {
+          body = null; // unreadable JSON is reported as a non-JSON response
+        }
       }
+      status = response.status;
+      if (classifyApiTestResponse(status, body) !== 'testItemGone') break;
     }
 
-    const status = response.status;
+    const meta = `<span style="font-size:11px;">${elapsed}ms &middot; Store #${escapeHtml(storeId)}</span>`;
     const firstError = escapeHtml(body?.errors?.[0]?.message || 'Unknown error');
     const banners = {
       working: ['banner ok', `<strong>&#10003; API is working</strong><br>Got a valid response. You're good to scan.`],
-      testItemGone: ['banner ok', `<strong>&#10003; API responding</strong><br>Home Depot answered normally, but the built-in test product no longer exists (${firstError}), so this check can't confirm product data.`],
+      testItemGone: ['banner ok', `<strong>&#10003; API responding</strong><br>Home Depot answered normally, but none of the ${tried} test products tried exists any more (last answer: ${firstError}), so this check can't confirm product data.`],
       reachable: ['banner ok', `<strong>&#10003; API responding</strong><br>Got HTTP ${status} but no product data. API is reachable.`],
       refused: ['banner warn', `<strong>&#9888; Home Depot is refusing requests (${status})</strong><br>It answered without any data. First check that your computer's clock is correct. If it is, you are being throttled: wait a while (15 min to a few hours) before scanning again.`],
       blocked: ['banner warn', `<strong>&#9888; Rate limited (403)</strong><br>Home Depot is blocking requests. Wait a few minutes before scanning again.`],

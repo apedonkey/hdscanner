@@ -343,6 +343,40 @@ test('every Test API Connection verdict has a banner in popup.js', () => {
   }
 });
 
+// Home Depot's answer for a product it no longer carries.
+const itemGone = (itemId) => ({
+  status: 200,
+  contentType: GRAPHQL_RESPONSE_JSON,
+  body: { data: { product: null }, errors: [{ message: `Item not found: ${itemId}` }] },
+});
+
+// Issue #6: the one built-in test product (100375745) was retired, and the check
+// could no longer confirm product data.
+test('Test API Connection moves on to the next test product when one is retired', async () => {
+  const banner = await runPopupApiTest((itemId) => (
+    itemId === '303115700' ? itemGone(itemId) : { status: 200, contentType: GRAPHQL_RESPONSE_JSON, body: PRODUCT }
+  ));
+  assert.equal(banner.className, 'banner ok');
+  assert.match(banner.html, /API is working/);
+  assert.deepEqual(banner.asked, ['303115700', '319738646']);
+});
+
+test('Test API Connection tries a product from the store\'s own saved list first', async () => {
+  const banner = await runPopupApiTest(
+    () => ({ status: 200, contentType: GRAPHQL_RESPONSE_JSON, body: PRODUCT }),
+    { storage: { skuInventoryMultiStore: { 2580: { skus: ['555001', '555002', '555003'] }, 4168: { skus: ['777001'] } } } }
+  );
+  assert.match(banner.html, /API is working/);
+  assert.equal(banner.asked.length, 1);
+  assert.ok(['555001', '555002', '555003'].includes(banner.asked[0]), `asked for ${banner.asked[0]}`);
+});
+
+test('Test API Connection stops at the first answer that is not a retired product', async () => {
+  const banner = await runPopupApiTest(() => throttled());
+  assert.match(banner.html, /refusing requests \(206\)/);
+  assert.equal(banner.asked.length, 1);
+});
+
 test('Test API Connection, run for real: the banner matches the answer', async () => {
   const cases = [
     ['product data in the new media type',
@@ -351,13 +385,9 @@ test('Test API Connection, run for real: the banner matches the answer', async (
     ['the 206 throttle',
       () => throttled(),
       'banner warn', /refusing requests \(206\).*clock is correct/],
-    ['the retired test product',
-      () => ({
-        status: 200,
-        contentType: GRAPHQL_RESPONSE_JSON,
-        body: { data: { product: null }, errors: [{ message: 'Item not found: 100375745' }] },
-      }),
-      'banner ok', /no longer exists \(Item not found: 100375745\)/],
+    ['every test product retired',
+      (itemId) => itemGone(itemId),
+      'banner ok', /none of the 3 test products tried exists any more \(last answer: Item not found: 100375745\)/],
     ['an HTML block page',
       () => ({ status: 200, contentType: 'text/html', body: undefined }),
       'banner warn', /Non-JSON response/],
