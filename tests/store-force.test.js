@@ -139,6 +139,20 @@ test('the address of a different selected store is not used', async () => {
   assert.equal(localizerIn(page).THD_LOCSTORE, '4168+');
 });
 
+test('a store picked earlier, and no longer the selected one, is still written in full', async () => {
+  const page = openPage({
+    cookies: [localizerCookie(CARLISLE_LOCALIZER)],
+    storage: {
+      selectedStore: { ...HANOVER, storeId: '4149', name: 'Carlisle' },
+      savedStoreDetails: { 4168: { ...HANOVER, name: undefined, storeName: 'Hanover' } },
+    },
+  });
+  await settle();
+
+  assert.equal(localizerIn(page).THD_LOCSTORE, '4168+Hanover - Hanover, PA+');
+  assert.equal(page.reloads, 1);
+});
+
 test('with no THD_LOCALIZER cookie the plain store cookies are set and the page reloads once', async () => {
   const page = openPage({ cookies: [] });
   await settle();

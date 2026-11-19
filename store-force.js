@@ -34,16 +34,20 @@
     }
   }
 
-  // The store value in the site's own format. The name and town are known only
-  // for the store selected in the popup; any other store is written by number
-  // alone. Whether the site accepts the number alone has not been checked
-  // against the live site.
+  // The store value in the site's own format. The name and town come from the
+  // store selected now, or from the record kept for every store picked in the
+  // popup or from Telegram (savedStoreDetails). A store with no record is
+  // written by number alone. Whether the site accepts the number alone has not
+  // been checked against the live site.
   async function localizerStoreValue(storeId) {
     try {
-      const { selectedStore } = await chrome.storage.local.get(['selectedStore']);
-      if (selectedStore && String(selectedStore.storeId) === storeId) {
-        const name = selectedStore.name || selectedStore.storeName;
-        const address = selectedStore.address || {};
+      const { selectedStore, savedStoreDetails } =
+        await chrome.storage.local.get(['selectedStore', 'savedStoreDetails']);
+      const candidates = [selectedStore, savedStoreDetails && savedStoreDetails[storeId]];
+      for (const store of candidates) {
+        if (!store || String(store.storeId) !== storeId) continue;
+        const name = store.name || store.storeName;
+        const address = store.address || {};
         if (name && address.city && address.state) {
           return `${storeId}+${name} - ${address.city}, ${address.state}+`;
         }

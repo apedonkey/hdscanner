@@ -726,6 +726,13 @@ function selectStore(store) {
     savedStores: STORE_NAMES
   });
 
+  // Keep the store's name and town for every store picked, not only the current
+  // one: store-force.js needs them to open an older result on its own store.
+  // The bot keeps the same record when a store is picked from Telegram.
+  chrome.storage.local.get(['savedStoreDetails']).then(({ savedStoreDetails }) =>
+    chrome.storage.local.set({ savedStoreDetails: { ...(savedStoreDetails || {}), [store.storeId]: store } })
+  ).catch(e => console.warn('[Popup] Could not save store details:', (e && e.message) || e));
+
   showSelectedStore(store);
   $('storeResults').style.display = 'none';
   populateFilterStores();
