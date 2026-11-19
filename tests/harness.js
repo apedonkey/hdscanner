@@ -621,17 +621,24 @@ function topLevelFunctionSource(source, name, label) {
 
 // Run popup.js's real testApiConnection() once and return the banner it ends
 // on: { className, html }. respond() returns { status, contentType, body } for
-// the request, or an Error to make fetch() itself fail.
-async function runPopupApiTest(respond) {
+// the request, or an Error to make fetch() itself fail; it is given the item id
+// the request asked for. `storage` is what chrome.storage.local holds (the
+// selected store is 2580). The banner also carries `asked`: the item ids
+// requested, in order.
+async function runPopupApiTest(respond, { storage = {} } = {}) {
   const source = readSource('popup.js');
   const banners = [];
+  const asked = [];
   const context = vm.createContext({
     API_URL: 'https://example.invalid/graphql',
     PRODUCT_QUERY: 'query { test }',
     $: () => ({ value: '2580', disabled: false, textContent: '' }),
-    showConnectionResult: (className, html) => { banners.push({ className, html }); },
-    fetch: async () => {
-      const answer = respond();
+    showConnectionResult: (className, html) => { banners.push({ className, html, asked }); },
+    chrome: { storage: { local: { get: async () => storage } } },
+    fetch: async (_url, init) => {
+      const itemId = JSON.parse(init.body).variables.itemId;
+      asked.push(itemId);
+      const answer = respond(itemId);
       if (answer instanceof Error) throw answer;
       return fakeResponse(answer);
     },
@@ -640,6 +647,7 @@ async function runPopupApiTest(respond) {
     [
       popupPureSource(),
       topLevelFunctionSource(source, 'escapeHtml', 'popup.js'),
+      topLevelFunctionSource(source, 'apiTestProducts', 'popup.js'),
       topLevelFunctionSource(source, 'testApiConnection', 'popup.js'),
     ].join('\n'),
     context,
